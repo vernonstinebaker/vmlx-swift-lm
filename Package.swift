@@ -61,10 +61,9 @@ let package = Package(
         // `osaurus-ai/mlx@e577ca02` (refs/heads/backport/3462-retain-bound-buffers)
         // but no mlx-swift branch advances the submodule pointer there yet.
         //
-        // 5531dd5 layers the macOS 26 command-buffer lifecycle fix over
-        // 0a56f90 (submodule mlx@96aa27a5, mx::malloc tracer + Bug-1 fix
-        // layered on upstream `ce45c525`).
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "5531dd5f1a9592f4de2f51b8009cd0e5258e4273"),
+        // e30ea56 retains the Osaurus Swift wrapper while advancing MLX to
+        // upstream 0.31.2's thread-local Metal command encoder.
+        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "e30ea5646436254210a4a470abc936abea6dcf9c"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         // Osaurus-owned Jinja chain. `osaurus-ai/Jinja` carries the
         // HuggingFace swift-jinja 2.3.5 code on the `osaurus/hf-2.3.5`
