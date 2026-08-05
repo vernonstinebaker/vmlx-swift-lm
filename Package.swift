@@ -53,7 +53,7 @@ let package = Package(
     dependencies: [
         // MLX 0.31.2 provides the thread-local Metal command encoder needed
         // for concurrent local generation.
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "f4f48957e7a0d13913e355d6a75433de02aec774"),
+        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "f4f48958af2a9757742e9ac8b73353e14d54b93a"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         // Osaurus-owned Jinja chain. `osaurus-ai/Jinja` carries the
         // HuggingFace swift-jinja 2.3.5 code on the `osaurus/hf-2.3.5`
