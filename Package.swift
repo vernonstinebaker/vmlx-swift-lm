@@ -51,19 +51,9 @@ let package = Package(
             targets: ["ANEProbe"]),
     ],
     dependencies: [
-        // 2026-05-04 reverted to 0a56f90 (was a21d2af). The advance to
-        // a21d2af pinned `osaurus-ai/mlx@7086ba37`, an INCOMPLETE backport
-        // of upstream ml-explore/mlx#3462: `mlx/backend/metal/eval.cpp:62`
-        // calls `encoder.take_retained_buffers()` but the corresponding
-        // `auto& encoder = metal::get_command_encoder(s);` declaration was
-        // not carried over. The package no longer builds at HEAD with the
-        // a21d2af pin; a corrected version of the backport exists at
-        // `osaurus-ai/mlx@e577ca02` (refs/heads/backport/3462-retain-bound-buffers)
-        // but no mlx-swift branch advances the submodule pointer there yet.
-        //
-        // 33c9312 retains the Osaurus Swift wrapper while advancing MLX to
-        // upstream 0.31.2's thread-local Metal command encoder.
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "33c931281159d5ec3e8bd78ad64057fff07d07c1"),
+        // MLX 0.31.2 provides the thread-local Metal command encoder needed
+        // for concurrent local generation.
+        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "f4f48957e7a0d13913e355d6a75433de02aec774"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         // Osaurus-owned Jinja chain. `osaurus-ai/Jinja` carries the
         // HuggingFace swift-jinja 2.3.5 code on the `osaurus/hf-2.3.5`
