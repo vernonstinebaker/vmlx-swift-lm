@@ -145,6 +145,8 @@ private final class BatchStreamTerminationState: @unchecked Sendable {
     }
 }
 
+private let mlxExecutionLock = NSLock()
+
 // MARK: - BatchEngine
 
 /// Continuous batching inference engine for mlx-swift-lm.
@@ -886,7 +888,9 @@ public actor BatchEngine {
 
     private func finishSoloFastPath(id: UUID) {
         guard soloFastPathID == id else { return }
-        Stream().synchronize()
+        mlxExecutionLock.withLock {
+            Stream().synchronize()
+        }
         soloFastPathID = nil
         soloFastPathTask = nil
         if !isShutdown && !waitQueue.isEmpty {
@@ -1004,7 +1008,9 @@ public actor BatchEngine {
             admitPendingRequests()
 
             // 2. Run one scheduling step
-            step()
+            mlxExecutionLock.withLock {
+                step()
+            }
 
             // 3. Remove finished slots
             activeSlots.removeAll { $0.isFinished }
