@@ -66,7 +66,7 @@ let package = Package(
         // `ce45c525`). Reverting drops the perf-oriented buffer-retain
         // optimization but restores correctness. Re-introduce when the
         // mlx-swift backport branch points at `e577ca02` or later.
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "0aa7186007c703364d430639ed6cfb19e3b099a5"),
+        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "3953d588413a308a5bcda16b97a7ff3512878f15"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         // Osaurus-owned Jinja chain. `osaurus-ai/Jinja` carries the
         // HuggingFace swift-jinja 2.3.5 code on the `osaurus/hf-2.3.5`
