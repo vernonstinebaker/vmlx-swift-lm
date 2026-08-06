@@ -145,7 +145,13 @@ private final class BatchStreamTerminationState: @unchecked Sendable {
     }
 }
 
-private let mlxExecutionLock = NSLock()
+public enum MLXExecutionCoordinator {
+    private static let lock = NSLock()
+
+    public static func withLock<T>(_ body: () throws -> T) rethrows -> T {
+        try lock.withLock(body)
+    }
+}
 
 // MARK: - BatchEngine
 
@@ -888,7 +894,7 @@ public actor BatchEngine {
 
     private func finishSoloFastPath(id: UUID) {
         guard soloFastPathID == id else { return }
-        mlxExecutionLock.withLock {
+        MLXExecutionCoordinator.withLock {
             Stream().synchronize()
         }
         soloFastPathID = nil
@@ -1008,7 +1014,7 @@ public actor BatchEngine {
             admitPendingRequests()
 
             // 2. Run one scheduling step
-            mlxExecutionLock.withLock {
+            MLXExecutionCoordinator.withLock {
                 step()
             }
 
