@@ -68,14 +68,8 @@ let package = Package(
         // mlx-swift backport branch points at `e577ca02` or later.
         .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "3953d588413a308a5bcda16b97a7ff3512878f15"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
-        // Osaurus-owned Jinja chain. `osaurus-ai/Jinja` carries the
-        // HuggingFace swift-jinja 2.3.5 code on the `osaurus/hf-2.3.5`
-        // branch/tag, and `osaurus-ai/swift-transformers` is the 1.3.0
-        // transformer package with its Jinja dependency pointed at that
-        // osaurus repo. Keeping both edges in the osaurus org avoids SwiftPM's
-        // duplicate package-identity warning while retaining the 2.x Jinja API.
-        .package(url: "https://github.com/osaurus-ai/Jinja.git", from: "2.0.0"),
-        .package(url: "https://github.com/osaurus-ai/swift-transformers", revision: "087a66b17e482220b94909c5cf98688383ae481a"),
+        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.4.2"),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
         // SwiftNIO stack — used by MLXDistributedTransport for TLS-backed
         // pipeline-parallel inference (Phase 2). swift-nio is already
         // resolved transitively via swift-transformers; we pin the floor
@@ -322,7 +316,7 @@ let package = Package(
                 .product(name: "MLXNN", package: "mlx-swift"),
                 .product(name: "MLXOptimizers", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers"),
-                .product(name: "Jinja", package: "jinja"),
+                .product(name: "Jinja", package: "swift-jinja"),
                 "MLXLMCommon",
                 "MLXLLM",
                 "MLXVLM",
