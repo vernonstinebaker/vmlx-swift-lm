@@ -1530,6 +1530,10 @@ public class CacheList: BaseKVCache {
         return caches[index]
     }
 
+    public var cacheCount: Int {
+        caches.count
+    }
+
     public override func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
         fatalError("CacheList should not use update(keys:values:) - use subscript access instead")
     }
