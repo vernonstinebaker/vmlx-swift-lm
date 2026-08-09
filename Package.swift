@@ -51,7 +51,10 @@ let package = Package(
             targets: ["ANEProbe"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", branch: "fix/pr450-upstream-mlx"),
+        .package(
+            url: "https://github.com/vernonstinebaker/mlx-swift",
+            revision: "c03e7c0859f7e390064bd8ee2f613453509a0a5d"
+        ),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.4.2"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
