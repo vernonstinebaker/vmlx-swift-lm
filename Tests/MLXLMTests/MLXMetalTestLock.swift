@@ -52,9 +52,9 @@ enum MLXMetalTestLock {
                 }
                 done.wait()
                 switch output {
-                case .success(let result):
+                case let .success(result):
                     continuation.resume(returning: result)
-                case .failure(let error):
+                case let .failure(error):
                     continuation.resume(throwing: error)
                 case .none:
                     continuation.resume(throwing: CocoaError(.userCancelled))
@@ -84,11 +84,20 @@ enum MLXMetalTestLock {
         candidates.append(repoRoot.appendingPathComponent(".build/arm64-apple-macosx/debug"))
         candidates.append(
             repoRoot.appendingPathComponent(
-                ".build/arm64-apple-macosx/debug/vmlx-swift-lmPackageTests.xctest/Contents/MacOS"))
+                ".build/arm64-apple-macosx/debug/vmlx-swift-lmPackageTests.xctest/Contents/MacOS"
+            )
+        )
         candidates.append(repoRoot.appendingPathComponent(".build/debug"))
         candidates.append(
             repoRoot.appendingPathComponent(
-                ".build/debug/vmlx-swift-lmPackageTests.xctest/Contents/MacOS"))
+                ".build/debug/vmlx-swift-lmPackageTests.xctest/Contents/MacOS"
+            )
+        )
+        candidates.append(
+            repoRoot.appendingPathComponent(
+                ".build/out/Products/Debug/MLXLMTests.xctest/Contents/MacOS"
+            )
+        )
 
         var scanned = Set<String>()
         for candidate in candidates {
@@ -96,12 +105,19 @@ enum MLXMetalTestLock {
             for _ in 0 ..< 4 {
                 let path = directory.path
                 if scanned.insert(path).inserted {
-                    let defaultURL = directory.appendingPathComponent("default.metallib")
                     let aliasURL = directory.appendingPathComponent("mlx.metallib")
-                    if fileManager.fileExists(atPath: defaultURL.path),
-                       !fileManager.fileExists(atPath: aliasURL.path)
-                    {
-                        try? fileManager.copyItem(at: defaultURL, to: aliasURL)
+                    let defaultURLs = [
+                        directory.appendingPathComponent("default.metallib"),
+                        directory.deletingLastPathComponent()
+                            .appendingPathComponent(
+                                "Resources/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib"
+                            ),
+                    ]
+                    for defaultURL in defaultURLs where fileManager.fileExists(atPath: defaultURL.path) {
+                        if !fileManager.fileExists(atPath: aliasURL.path) {
+                            try? fileManager.copyItem(at: defaultURL, to: aliasURL)
+                        }
+                        break
                     }
                 }
                 directory.deleteLastPathComponent()
