@@ -87,7 +87,7 @@ public enum Collectives {
     ) -> MLXArray {
         var resPtr: UnsafeMutableRawPointer? = nil
         let srcPtr = unsafeBitCast(x.ctx, to: UnsafeMutableRawPointer?.self)
-        let grpPtr = group.handle.raw.ctx
+        let grpPtr = group.handle.raw
         let stmPtr = defaultStream()
         let rc = call(&resPtr, srcPtr, grpPtr, stmPtr)
         precondition(rc == 0, "mlx-c collective failed with rc=\(rc)")
@@ -109,7 +109,7 @@ public enum Collectives {
     ) -> MLXArray {
         var resPtr: UnsafeMutableRawPointer? = nil
         let srcPtr = unsafeBitCast(x.ctx, to: UnsafeMutableRawPointer?.self)
-        let grpPtr = group.handle.raw.ctx
+        let grpPtr = group.handle.raw
         let stmPtr = defaultStream()
         let rc = call(&resPtr, srcPtr, intArg, grpPtr, stmPtr)
         precondition(rc == 0, "mlx-c send/recv failed with rc=\(rc)")

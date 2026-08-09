@@ -27,21 +27,21 @@ public struct Group: Sendable {
     public init(strict: Bool = false, backend: String? = nil) {
         if let backend {
             self.handle = backend.withCString { bk in
-                MLXDistributedGroupHandle(_mlx_distributed_init(strict, bk))
+                MLXDistributedGroupHandle(_vmlx_group_init(strict, bk))
             }
         } else {
-            self.handle = MLXDistributedGroupHandle(_mlx_distributed_init(strict, nil))
+            self.handle = MLXDistributedGroupHandle(_vmlx_group_init(strict, nil))
         }
     }
 
     /// Number of ranks in this group.
     public var size: Int {
-        Int(_mlx_distributed_group_size(handle.raw))
+        Int(_vmlx_group_size(handle.raw))
     }
 
     /// Local rank within this group.
     public var rank: Int {
-        Int(_mlx_distributed_group_rank(handle.raw))
+        Int(_vmlx_group_rank(handle.raw))
     }
 
     /// Returns true if this group has more than one rank — i.e. real
@@ -55,7 +55,7 @@ public struct Group: Sendable {
     /// handle that would result).
     public func split(color: Int, key: Int) -> Group {
         guard isMultiRank else { return self }
-        let raw = _mlx_distributed_group_split(handle.raw, Int32(color), Int32(key))
+        let raw = _vmlx_group_split(handle.raw, Int32(color), Int32(key))
         return Group(handle: MLXDistributedGroupHandle(raw))
     }
 
@@ -64,41 +64,30 @@ public struct Group: Sendable {
     }
 }
 
-/// Sendable wrapper around the mlx_distributed_group struct (just a
-/// `void* ctx` pointer). The underlying C++ Group is reference-counted
-/// internally; passing this handle by value is safe.
+/// Sendable wrapper around the mlx_distributed_group `ctx` pointer.
 public struct MLXDistributedGroupHandle: @unchecked Sendable {
-    let raw: _MLXDistributedGroupRaw
+    let raw: UnsafeMutableRawPointer?
 
-    init(_ raw: _MLXDistributedGroupRaw) { self.raw = raw }
-}
-
-/// Mirror of the C-level `mlx_distributed_group` struct (a struct with
-/// a single `void*` ctx field). Layout-compatible so we can pass by
-/// value across the @_silgen_name boundary.
-public struct _MLXDistributedGroupRaw {
-    public var ctx: UnsafeMutableRawPointer?
-    public init(ctx: UnsafeMutableRawPointer? = nil) { self.ctx = ctx }
+    init(_ raw: UnsafeMutableRawPointer?) { self.raw = raw }
 }
 
 // MARK: - C symbol forward declarations
 //
-// mlx-swift doesn't export Cmlx as a public product so we can't
-// `import Cmlx`. These declarations bind to symbols pulled in via
-// our MLX dependency.
+// mlx-swift doesn't export Cmlx as a public product, so these declarations
+// bind to the vMLX C shim target.
 
-@_silgen_name("mlx_distributed_init")
-private func _mlx_distributed_init(
+@_silgen_name("vmlx_group_init")
+private func _vmlx_group_init(
     _ strict: Bool, _ backend: UnsafePointer<CChar>?
-) -> _MLXDistributedGroupRaw
+) -> UnsafeMutableRawPointer?
 
-@_silgen_name("mlx_distributed_group_rank")
-private func _mlx_distributed_group_rank(_ g: _MLXDistributedGroupRaw) -> Int32
+@_silgen_name("vmlx_group_rank")
+private func _vmlx_group_rank(_ g: UnsafeMutableRawPointer?) -> Int32
 
-@_silgen_name("mlx_distributed_group_size")
-private func _mlx_distributed_group_size(_ g: _MLXDistributedGroupRaw) -> Int32
+@_silgen_name("vmlx_group_size")
+private func _vmlx_group_size(_ g: UnsafeMutableRawPointer?) -> Int32
 
-@_silgen_name("mlx_distributed_group_split")
-private func _mlx_distributed_group_split(
-    _ g: _MLXDistributedGroupRaw, _ color: Int32, _ key: Int32
-) -> _MLXDistributedGroupRaw
+@_silgen_name("vmlx_group_split")
+private func _vmlx_group_split(
+    _ g: UnsafeMutableRawPointer?, _ color: Int32, _ key: Int32
+) -> UnsafeMutableRawPointer?

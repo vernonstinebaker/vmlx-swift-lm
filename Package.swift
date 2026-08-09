@@ -51,22 +51,7 @@ let package = Package(
             targets: ["ANEProbe"]),
     ],
     dependencies: [
-        // 2026-05-04 reverted to 0a56f90 (was a21d2af). The advance to
-        // a21d2af pinned `osaurus-ai/mlx@7086ba37`, an INCOMPLETE backport
-        // of upstream ml-explore/mlx#3462: `mlx/backend/metal/eval.cpp:62`
-        // calls `encoder.take_retained_buffers()` but the corresponding
-        // `auto& encoder = metal::get_command_encoder(s);` declaration was
-        // not carried over. The package no longer builds at HEAD with the
-        // a21d2af pin; a corrected version of the backport exists at
-        // `osaurus-ai/mlx@e577ca02` (refs/heads/backport/3462-retain-bound-buffers)
-        // but no mlx-swift branch advances the submodule pointer there yet.
-        //
-        // 0a56f90 is the last green pin (submodule mlx@96aa27a5,
-        // mx::malloc tracer + Bug-1 fix layered on upstream
-        // `ce45c525`). Reverting drops the perf-oriented buffer-retain
-        // optimization but restores correctness. Re-introduce when the
-        // mlx-swift backport branch points at `e577ca02` or later.
-        .package(url: "https://github.com/vernonstinebaker/mlx-swift", revision: "3953d588413a308a5bcda16b97a7ff3512878f15"),
+        .package(url: "https://github.com/vernonstinebaker/mlx-swift", branch: "fix/pr450-upstream-mlx"),
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0-latest"),
         .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.4.2"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.3"),
@@ -171,11 +156,7 @@ let package = Package(
             name: "MLXDistributedJACCL",
             dependencies: [
                 "MLXDistributedCore",
-                // Depend on MLX so its dependency on Cmlx pulls in the
-                // mlx_distributed_* C symbols at link time. We reach
-                // those symbols via @_silgen_name in JACCL.swift instead
-                // of importing Cmlx, since mlx-swift doesn't export Cmlx
-                // as a library product.
+                "CmlxDistributedShim",
                 .product(name: "MLX", package: "mlx-swift"),
             ],
             path: "Libraries/MLXDistributedJACCL",
