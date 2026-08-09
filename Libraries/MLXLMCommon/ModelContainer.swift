@@ -4,6 +4,26 @@ import Foundation
 import MLX
 import MLXNN
 
+private final class CacheCoordinatorStorage: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: CacheCoordinator?
+
+    func get() -> CacheCoordinator? {
+        lock.withLock { value }
+    }
+
+    func set(_ newValue: CacheCoordinator?) {
+        lock.withLock { value = newValue }
+    }
+
+    func clear() {
+        lock.withLock {
+            value?.clear()
+            value = nil
+        }
+    }
+}
+
 /// Container for models that guarantees single threaded access.
 ///
 /// Wrap models used by e.g. the UI in a ModelContainer. Callers can access
@@ -31,6 +51,23 @@ import MLXNN
 /// ```
 public final class ModelContainer: Sendable {
     private let context: SerialAccessContainer<ModelContext>
+    private let cacheCoordinatorStorage = CacheCoordinatorStorage()
+
+    public var cacheCoordinator: CacheCoordinator? {
+        cacheCoordinatorStorage.get()
+    }
+
+    public func enableCaching(config: CacheCoordinatorConfig = .init()) {
+        cacheCoordinatorStorage.set(CacheCoordinator(config: config))
+    }
+
+    public func enableCachingAsync() async {
+        enableCaching()
+    }
+
+    public func disableCaching() {
+        cacheCoordinatorStorage.clear()
+    }
 
     public var configuration: ModelConfiguration {
         get async {
