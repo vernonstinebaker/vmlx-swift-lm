@@ -1708,6 +1708,9 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                 case .chunk(let text):
                     await Self.emit(
                         text: text, entryID: entryID, destination: .response, into: channel)
+                case .reasoning(let text):
+                    await Self.emit(
+                        text: text, entryID: entryID, destination: .reasoning, into: channel)
                 case .info(let info):
                     // MLX-LM emits one .info event at end-of-generation with
                     // authoritative scalar token counts (`promptTokenCount`

@@ -36,7 +36,9 @@ struct BatchSlot {
     let continuation: AsyncStream<BatchGeneration>.Continuation
     let sampler: LogitSampler
     var processor: LogitProcessor?
-    let cache: [KVCache]
+    var cache: [KVCache]
+    let parameters: GenerateParameters
+    var compiledForward: (@Sendable ([MLXArray]) -> [MLXArray])?
     let maxTokens: Int?
     let promptTokenCount: Int
     let prefillStartedAt = Date()
@@ -53,6 +55,8 @@ struct BatchSlot {
         sampler = request.parameters.sampler()
         processor = request.parameters.processor()
         self.cache = cache
+        parameters = request.parameters
+        compiledForward = nil
         maxTokens = request.parameters.maxTokens
         promptTokenCount = request.input.text.tokens.size
     }

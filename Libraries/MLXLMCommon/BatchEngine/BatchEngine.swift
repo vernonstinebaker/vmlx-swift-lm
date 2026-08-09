@@ -77,16 +77,33 @@ public actor BatchEngine {
         }
         Task {
             var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+            var stopFilter = StopStringFilter(stopStrings: Set(parameters.extraStopStrings))
+            var stopped = false
             for await event in tokenStream {
                 switch event {
                 case let .token(token):
                     detokenizer.append(token: token)
                     if let text = detokenizer.next() {
-                        continuation.yield(.chunk(text))
+                        let filtered = stopFilter.process(text)
+                        if let text = filtered.text {
+                            continuation.yield(.chunk(text))
+                        }
+                        if filtered.stopped {
+                            stopped = true
+                            self.cancel(id)
+                        }
                     }
                 case let .info(info):
+                    if !stopped, let tail = stopFilter.finish() {
+                        continuation.yield(.chunk(tail))
+                    }
                     detokenizer.startNewSegment()
-                    continuation.yield(.info(info))
+                    continuation.yield(.info(stopped ? .init(
+                        promptTokenCount: info.promptTokenCount,
+                        generationTokenCount: info.generationTokenCount,
+                        promptTime: info.promptTime,
+                        generationTime: info.generateTime,
+                        stopReason: .stop) : info))
                 }
             }
             continuation.finish()
@@ -212,11 +229,17 @@ public actor BatchEngine {
         }
         slot.phase = .decode
         slot.decodeStartedAt = Date()
+        promoteToCompiledDecode(&slot)
         emit(firstToken, to: &slot)
         activeSlots[index] = slot
     }
 
     private func decode(_ indices: [Int]) {
+        if indices.count == 1, let forward = activeSlots[indices[0]].compiledForward {
+            decodeCompiled(indices[0], forward: forward)
+            return
+        }
+
         let tokens = stacked(indices.compactMap { activeSlots[$0].nextToken }).reshaped(indices.count, 1)
         let layerCount = activeSlots[indices[0]].cache.count
         var arraysCaches: [BatchArraysCache] = []
@@ -254,6 +277,43 @@ public actor BatchEngine {
             emit(slot.sample(logits[batchIndex ..< batchIndex + 1, 0, 0...]), to: &slot)
             activeSlots[slotIndex] = slot
         }
+    }
+
+    private func decodeCompiled(
+        _ index: Int,
+        forward: @Sendable ([MLXArray]) -> [MLXArray]
+    ) {
+        var slot = activeSlots[index]
+        guard let nextToken = slot.nextToken else { return }
+        let logits = MLXExecutionCoordinator.withLock {
+            let result = forward([nextToken])
+            precondition(result.count == 1)
+            MLX.eval(result[0])
+            return result[0][0 ..< 1, 0, 0...]
+        }
+        emit(slot.sample(logits), to: &slot)
+        activeSlots[index] = slot
+    }
+
+    private func promoteToCompiledDecode(_ slot: inout BatchSlot) {
+        guard maxBatchSize == 1,
+              slot.parameters.enableCompiledBatchDecode,
+              slot.parameters.compiledBatchBuckets.contains(1),
+              slot.cache.allSatisfy({ $0 is KVCacheSimple })
+        else {
+            return
+        }
+
+        let requestedLength = slot.promptTokenCount + (slot.maxTokens ?? 0)
+        let maxLength = max(256, requestedLength)
+        let promoted = slot.cache.map { CompilableKVCache(from: $0, maxLength: maxLength) as KVCache }
+        MLXExecutionCoordinator.withLock {
+            MLX.eval(promoted)
+        }
+        slot.cache = promoted
+        slot.compiledForward = BatchCompile.compileForward(
+            model: context.model,
+            cache: promoted.map { $0 as! CompilableKVCache })
     }
 
     private func emit(_ token: MLXArray, to slot: inout BatchSlot) {
