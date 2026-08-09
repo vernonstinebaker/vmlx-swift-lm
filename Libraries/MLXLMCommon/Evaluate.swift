@@ -125,6 +125,14 @@ public struct GenerateParameters: Sendable {
     /// default). Inert at `temperature == 0` (argmax has no RNG).
     public var seed: UInt64?
 
+    public var enableCompiledBatchDecode: Bool
+
+    public var compiledBatchBuckets: [Int]
+
+    public var draftStrategy: DraftStrategy?
+
+    public var extraStopStrings: [String]
+
     /// Penalty factor for repeating tokens
     public var repetitionPenalty: Float?
 
@@ -162,7 +170,11 @@ public struct GenerateParameters: Sendable {
         frequencyPenalty: Float? = nil,
         frequencyContextSize: Int = 20,
         prefill: PrefillParameters = .init(),
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        enableCompiledBatchDecode: Bool = false,
+        compiledBatchBuckets: [Int] = [1, 2, 4],
+        draftStrategy: DraftStrategy? = nil,
+        extraStopStrings: [String] = []
     ) {
         self.maxTokens = maxTokens
         self.maxKVSize = maxKVSize
@@ -183,6 +195,10 @@ public struct GenerateParameters: Sendable {
         self.frequencyContextSize = frequencyContextSize
         self.prefill = prefill
         self.seed = seed
+        self.enableCompiledBatchDecode = enableCompiledBatchDecode
+        self.compiledBatchBuckets = compiledBatchBuckets
+        self.draftStrategy = draftStrategy
+        self.extraStopStrings = extraStopStrings
     }
 
     @available(
@@ -210,7 +226,11 @@ public struct GenerateParameters: Sendable {
         frequencyPenalty: Float? = nil,
         frequencyContextSize: Int = 20,
         prefillStepSize: Int?,
-        seed: UInt64? = nil
+        seed: UInt64? = nil,
+        enableCompiledBatchDecode: Bool = false,
+        compiledBatchBuckets: [Int] = [1, 2, 4],
+        draftStrategy: DraftStrategy? = nil,
+        extraStopStrings: [String] = []
     ) {
         self.init(
             maxTokens: maxTokens, maxKVSize: maxKVSize, kvBits: kvBits,
@@ -219,7 +239,11 @@ public struct GenerateParameters: Sendable {
             repetitionPenalty: repetitionPenalty, repetitionContextSize: repetitionContextSize,
             presencePenalty: presencePenalty, presenceContextSize: presenceContextSize,
             frequencyPenalty: frequencyPenalty, frequencyContextSize: frequencyContextSize,
-            prefill: .init(stepSize: prefillStepSize), seed: seed)
+            prefill: .init(stepSize: prefillStepSize), seed: seed,
+            enableCompiledBatchDecode: enableCompiledBatchDecode,
+            compiledBatchBuckets: compiledBatchBuckets,
+            draftStrategy: draftStrategy,
+            extraStopStrings: extraStopStrings)
     }
 
     public func sampler() -> LogitSampler {
@@ -2450,6 +2474,8 @@ public enum Generation: Sendable {
     /// A generated text chunk as a String.
     case chunk(String)
 
+    case reasoning(String)
+
     /// Completion information summarizing token counts and performance metrics.
     case info(GenerateCompletionInfo)
 
@@ -2460,6 +2486,7 @@ public enum Generation: Sendable {
     public var chunk: String? {
         switch self {
         case .chunk(let string): string
+        case .reasoning: nil
         case .info: nil
         case .toolCall: nil
         }
@@ -2469,6 +2496,7 @@ public enum Generation: Sendable {
     public var info: GenerateCompletionInfo? {
         switch self {
         case .chunk: nil
+        case .reasoning: nil
         case .info(let info): info
         case .toolCall: nil
         }
@@ -2478,6 +2506,7 @@ public enum Generation: Sendable {
     public var toolCall: ToolCall? {
         switch self {
         case .chunk: nil
+        case .reasoning: nil
         case .info: nil
         case .toolCall(let toolCall): toolCall
         }
