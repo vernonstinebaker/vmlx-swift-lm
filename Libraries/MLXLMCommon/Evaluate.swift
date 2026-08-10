@@ -1708,6 +1708,33 @@ public func generate(
     wiredMemoryTicket: WiredMemoryTicket? = nil,
     tools: [[String: any Sendable]]? = nil
 ) throws -> AsyncStream<Generation> {
+    if parameters.draftStrategy?.usesBlockDiffusion == true {
+        let iterator = try SpecDecStrategyTokenIterator(
+            input: input,
+            target: context.model,
+            parameters: parameters
+        )
+        let stopStrings = context.configuration.effectiveStopStrings.union(parameters.extraStopStrings)
+        let (stream, _) = generateLoopTask(
+            promptTokenCount: input.text.tokens.size,
+            modelConfiguration: context.configuration,
+            tokenizer: context.tokenizer,
+            iterator: iterator,
+            wiredMemoryTicket: wiredMemoryTicket,
+            handler: TextToolTokenLoopHandler(
+                tokenizer: context.tokenizer,
+                stopStrings: stopStrings,
+                format: context.configuration.toolCallFormat ?? .json,
+                tools: tools,
+                reasoningConfig: context.configuration.reasoningConfig,
+                promptTail: context.tokenizer.decode(
+                    tokenIds: Array(input.text.tokens.asArray(Int.self).suffix(64)),
+                    skipSpecialTokens: false
+                )
+            )
+        )
+        return stream
+    }
     let iterator = try TokenIterator(
         input: input, model: context.model, cache: cache, parameters: parameters,
         components: components)
@@ -2611,10 +2638,17 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
 
     init(
         tokenizer: Tokenizer, stopStrings: Set<String> = [], format: ToolCallFormat,
-        tools: [[String: any Sendable]]? = nil
+        tools: [[String: any Sendable]]? = nil,
+        reasoningConfig: ReasoningConfig? = nil,
+        promptTail: String? = nil
     ) {
         self.decoder = format.makeTokenStreamDecoder(
-            tokenizer: tokenizer, tools: tools, stopStrings: stopStrings)
+            tokenizer: tokenizer,
+            tools: tools,
+            stopStrings: stopStrings,
+            reasoningConfig: reasoningConfig,
+            promptTail: promptTail
+        )
     }
 
     var additionalStopTokenIDs: Set<Int> { decoder.additionalStopTokenIDs }
@@ -2676,6 +2710,12 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
         switch event {
         case .response(let response):
             if case .terminated = emit(.chunk(response)) {
+                return .cancelled
+            }
+            return .more
+
+        case .reasoning(let reasoning):
+            if case .terminated = emit(.reasoning(reasoning)) {
                 return .cancelled
             }
             return .more

@@ -153,7 +153,9 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
     func makeTokenStreamDecoder(
         tokenizer: any Tokenizer,
         tools: [[String: any Sendable]]?,
-        stopStrings: Set<String>
+        stopStrings: Set<String>,
+        reasoningConfig: ReasoningConfig? = nil,
+        promptTail: String? = nil
     ) -> any TokenStreamDecoder {
         switch self {
         case .gptOSS:
@@ -165,12 +167,24 @@ public enum ToolCallFormat: String, Sendable, Codable, CaseIterable {
             // Preserve the pre-Harmony compatibility path when a tokenizer
             // lacks the protocol's complete control-token vocabulary.
             return StandardTokenStreamDecoder(
-                tokenizer: tokenizer, format: self, tools: tools, stopStrings: stopStrings)
+                tokenizer: tokenizer,
+                format: self,
+                tools: tools,
+                stopStrings: stopStrings,
+                reasoningConfig: reasoningConfig,
+                promptTail: promptTail
+            )
 
         case .json, .lfm2, .xmlFunction, .glm4, .gemma, .gemma4, .kimiK2, .minimaxM2,
             .mistral, .llama3:
             return StandardTokenStreamDecoder(
-                tokenizer: tokenizer, format: self, tools: tools, stopStrings: stopStrings)
+                tokenizer: tokenizer,
+                format: self,
+                tools: tools,
+                stopStrings: stopStrings,
+                reasoningConfig: reasoningConfig,
+                promptTail: promptTail
+            )
         }
     }
 
