@@ -940,6 +940,8 @@ public class Qwen35: Module, VLMModel, HiddenStateCaptureModel, TokenEmbedderMod
 
     public var vocabularySize: Int { config.vocabSize }
 
+    public var supportedCaptureLayerIDs: Range<Int> { 0 ..< config.textConfiguration.hiddenLayers }
+
     public var loraLayers: [Module] {
         languageModel.model.layers
     }
