@@ -172,6 +172,8 @@ final class StopStringTests: XCTestCase {
             switch event {
             case .response:
                 return true
+            case .reasoning:
+                return true
             case .toolCall(let toolCall):
                 toolCalls.append(toolCall)
                 return true

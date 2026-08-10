@@ -3,6 +3,7 @@
 /// A semantic event decoded from a model's generated token stream.
 enum TokenStreamEvent: Sendable {
     case response(String)
+    case reasoning(String)
     case toolCall(ToolCall)
     case stop
 }
@@ -39,34 +40,67 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private var detokenizer: NaiveStreamingDetokenizer
     private let toolCallProcessor: ToolCallProcessor
     private var stopStringFilter: StopStringFilter
+    private var reasoningCollector: ReasoningTokenCollector?
 
     init(
         tokenizer: any Tokenizer,
         format: ToolCallFormat,
         tools: [[String: any Sendable]]?,
-        stopStrings: Set<String>
+        stopStrings: Set<String>,
+        reasoningConfig: ReasoningConfig? = nil,
+        promptTail: String? = nil
     ) {
         self.detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         self.toolCallProcessor = ToolCallProcessor(format: format, tools: tools)
         self.stopStringFilter = StopStringFilter(stopStrings: stopStrings)
+        if let reasoningConfig {
+            reasoningCollector = ReasoningTokenCollector(
+                config: reasoningConfig,
+                primedInside: promptTail.map {
+                    ReasoningEventEmitter.promptEndsInsideReasoning(
+                        renderedPromptTail: $0,
+                        config: reasoningConfig
+                    )
+                } ?? false,
+                tokenizer: tokenizer
+            )
+        }
     }
 
     mutating func push(_ token: Int, emit: (TokenStreamEvent) -> Bool) -> Bool {
+        if var reasoningCollector {
+            let segments = reasoningCollector.ingest(token)
+            self.reasoningCollector = reasoningCollector
+            for segment in segments {
+                switch segment {
+                case .reasoning(let text):
+                    guard emit(.reasoning(text)) else { return false }
+                case .response(let text):
+                    guard processResponse(text, emit: emit) else { return false }
+                }
+            }
+            return true
+        }
+
         detokenizer.append(token: token)
         guard let chunk = detokenizer.next() else { return true }
-
-        let result = stopStringFilter.process(chunk)
-        if let text = result.text, !emitProcessed(text, emit: emit) {
-            return false
-        }
-        if result.stopped {
-            _ = emit(.stop)
-            return false
-        }
-        return true
+        return processResponse(chunk, emit: emit)
     }
 
     mutating func finish(emit: (TokenStreamEvent) -> Bool) -> Bool {
+        if var reasoningCollector {
+            let segments = reasoningCollector.finalize()
+            self.reasoningCollector = reasoningCollector
+            for segment in segments {
+                switch segment {
+                case .reasoning(let text):
+                    guard emit(.reasoning(text)) else { return false }
+                case .response(let text):
+                    guard processResponse(text, emit: emit) else { return false }
+                }
+            }
+        }
+
         if let text = stopStringFilter.finish(), !emitProcessed(text, emit: emit) {
             return false
         }
@@ -80,6 +114,21 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
 
         for toolCall in toolCallProcessor.drainToolCalls() {
             guard emit(.toolCall(toolCall)) else { return false }
+        }
+        return true
+    }
+
+    private mutating func processResponse(
+        _ chunk: String,
+        emit: (TokenStreamEvent) -> Bool
+    ) -> Bool {
+        let result = stopStringFilter.process(chunk)
+        if let text = result.text, !emitProcessed(text, emit: emit) {
+            return false
+        }
+        if result.stopped {
+            _ = emit(.stop)
+            return false
         }
         return true
     }

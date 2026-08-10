@@ -69,6 +69,26 @@ public actor BatchEngine {
         input: consuming sending LMInput,
         parameters: GenerateParameters
     ) -> AsyncStream<Generation> {
+        if parameters.draftStrategy?.usesBlockDiffusion == true {
+            do {
+                return try MLXLMCommon.generate(
+                    input: input,
+                    parameters: parameters,
+                    context: context
+                )
+            } catch {
+                let (stream, continuation) = AsyncStream<Generation>.makeStream()
+                continuation.yield(.info(.init(
+                    promptTokenCount: input.text.tokens.size,
+                    generationTokenCount: 0,
+                    promptTime: 0,
+                    generationTime: 0,
+                    stopReason: .cancelled
+                )))
+                continuation.finish()
+                return stream
+            }
+        }
         let tokenizer = context.tokenizer
         let (id, tokenStream) = submit(input: input, parameters: parameters)
         let (stream, continuation) = AsyncStream<Generation>.makeStream()

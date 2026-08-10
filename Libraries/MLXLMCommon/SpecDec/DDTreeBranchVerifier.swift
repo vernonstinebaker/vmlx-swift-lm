@@ -16,8 +16,8 @@ public struct DDTreeBranchVerification {
 /// one-pass tree forward. Each node gets an independent cache fork, so this
 /// deliberately does not batch or share sibling execution.
 public enum DDTreeBranchVerifier {
-    public static func verify<Target: LanguageModel>(
-        target: Target,
+    public static func verify(
+        target: any LanguageModel,
         tree: DDTree,
         cache: [KVCache],
         rootPrediction: Int32
