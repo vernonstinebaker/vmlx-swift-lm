@@ -44,6 +44,7 @@ public enum SpecDecRuntimeDDTree {
         precondition(args.maxNewTokens > 0)
         precondition(args.blockSize >= 2)
         precondition(args.branchingBudget > 0)
+        precondition(args.blockSize == args.drafter.config.blockSize)
 
         let draft = SpecDecRuntimeLinear.run(.init(
             target: args.target,

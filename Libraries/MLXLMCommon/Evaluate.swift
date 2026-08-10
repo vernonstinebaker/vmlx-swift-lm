@@ -1729,11 +1729,21 @@ public func generate(
     wiredMemoryTicket: WiredMemoryTicket? = nil,
     tools: [[String: any Sendable]]? = nil
 ) throws -> AsyncStream<Generation> {
-    if parameters.draftStrategy?.usesBlockDiffusion == true {
+    if parameters.draftStrategy?.usesBlockDiffusion == true,
+        try SpecDecStrategyCachePolicy.usesFullReprefill(cache: cache, parameters: parameters)
+    {
+        var stopTokenIDs = buildStopTokenIds(
+            modelConfiguration: context.configuration,
+            tokenizer: context.tokenizer)
+        if let unknownTokenID = context.tokenizer.unknownTokenId {
+            stopTokenIDs.insert(unknownTokenID)
+        }
         let iterator = try SpecDecStrategyTokenIterator(
             input: input,
             target: context.model,
-            parameters: parameters
+            parameters: parameters,
+            components: components,
+            stopTokenIDs: Set(stopTokenIDs.map(Int32.init))
         )
         let stopStrings = context.configuration.effectiveStopStrings.union(parameters.extraStopStrings)
         let (stream, _) = generateLoopTask(

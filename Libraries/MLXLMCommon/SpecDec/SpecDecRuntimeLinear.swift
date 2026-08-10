@@ -39,10 +39,7 @@ public struct DFlashLinearResult: Sendable {
 
 public enum SpecDecRuntimeLinear {
     public static func run(_ args: DFlashLinearArgs) -> DFlashLinearResult {
-        precondition(args.temperature == 0)
-        precondition(args.inputIds.ndim == 2 && args.inputIds.dim(0) == 1)
-        let blockSize = args.drafter.config.blockSize
-        precondition(blockSize >= 2)
+        let blockSize = validatedBlockSize(args)
 
         let promptLength = args.inputIds.dim(1)
         let limit = promptLength + args.maxNewTokens
@@ -97,6 +94,16 @@ public enum SpecDecRuntimeLinear {
             tokenIds: Array(tokenIDs.prefix(limit)),
             acceptanceLengths: acceptedLengths
         )
+    }
+
+    private static func validatedBlockSize(_ args: DFlashLinearArgs) -> Int {
+        precondition(args.temperature == 0)
+        precondition(args.inputIds.ndim == 2 && args.inputIds.dim(0) == 1)
+        precondition(args.drafter.config.blockSize >= 2)
+        precondition(args.maxNewTokens > 0)
+        precondition(!args.targetBlockIDs.isEmpty)
+        precondition(args.targetBlockIDs.allSatisfy { args.target.supportedCaptureLayerIDs.contains($0) })
+        return args.drafter.config.blockSize
     }
 
     private static func sampleLastToken(_ logits: MLXArray) -> Int32 {

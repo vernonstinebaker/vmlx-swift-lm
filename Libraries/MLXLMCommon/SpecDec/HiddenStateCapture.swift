@@ -1,6 +1,8 @@
 import MLX
 
 public protocol HiddenStateCaptureModel: LanguageModel {
+    var supportedCaptureLayerIDs: Range<Int> { get }
+
     func callAsFunction(
         _ inputs: MLXArray,
         cache: [KVCache]?,

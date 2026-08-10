@@ -6,6 +6,29 @@ import Testing
 
 @Suite("Speculative strategy dispatch", .serialized)
 struct SpecDecStrategyTests {
+    @Test("Full-prefill strategies preserve explicit cache configuration")
+    func cachePolicyUsesCanonicalGenerationWhenNeeded() throws {
+        #expect(try SpecDecStrategyCachePolicy.usesFullReprefill(
+            cache: nil,
+            parameters: .init(draftStrategy: .dflash(
+                drafterPath: URL(filePath: "/tmp/dflash"), blockSize: 2
+            ))
+        ))
+        #expect(try !(SpecDecStrategyCachePolicy.usesFullReprefill(
+            cache: nil,
+            parameters: .init(
+                maxKVSize: 32,
+                draftStrategy: .dflash(drafterPath: URL(filePath: "/tmp/dflash"), blockSize: 2)
+            )
+        )))
+        #expect(try !(SpecDecStrategyCachePolicy.usesFullReprefill(
+            cache: [KVCacheSimple()],
+            parameters: .init(draftStrategy: .dflash(
+                drafterPath: URL(filePath: "/tmp/dflash"), blockSize: 2
+            ))
+        )))
+    }
+
     @Test(
         "Selected strategies execute their real runtimes",
         .enabled(if: ProcessInfo.processInfo.environment["MLX_RUN_SPECDEC_TESTS"] == "1")

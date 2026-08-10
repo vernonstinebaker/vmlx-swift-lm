@@ -182,6 +182,8 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider, HiddenState
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
+    public var supportedCaptureLayerIDs: Range<Int> { 0 ..< configuration.hiddenLayers }
+
     public let model: Qwen3ModelInner
     let configuration: Qwen3Configuration
 
