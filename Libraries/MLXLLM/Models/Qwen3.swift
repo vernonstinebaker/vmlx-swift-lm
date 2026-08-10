@@ -151,19 +151,34 @@ public class Qwen3ModelInner: Module {
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        callAsFunctionCapturing(inputs, cache: cache, captureLayerIDs: []).hidden
+    }
+
+    func callAsFunctionCapturing(
+        _ inputs: MLXArray,
+        cache: [KVCache]? = nil,
+        captureLayerIDs: Set<Int>
+    ) -> (hidden: MLXArray, captured: [Int: MLXArray]) {
         var h = embedTokens(inputs)
 
         let mask = createAttentionMask(h: h, cache: cache?.first)
+        var captured: [Int: MLXArray] = [:]
+        captured.reserveCapacity(captureLayerIDs.count)
 
         for (i, layer) in layers.enumerated() {
             h = layer(h, mask: mask, cache: cache?[i])
+            if captureLayerIDs.contains(i) {
+                captured[i] = h
+            }
         }
 
-        return norm(h)
+        return (norm(h), captured)
     }
 }
 
-public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
+public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider, HiddenStateCaptureModel,
+    TokenEmbedderModel
+{
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -191,6 +206,28 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider {
             out = model.embedTokens.asLinear(out)
         }
         return out
+    }
+
+    public func callAsFunction(
+        _ inputs: MLXArray,
+        cache: [KVCache]?,
+        captureLayerIDs: Set<Int>
+    ) -> (logits: MLXArray, capturedHiddenStates: [Int: MLXArray]) {
+        let result = model.callAsFunctionCapturing(
+            inputs,
+            cache: cache,
+            captureLayerIDs: captureLayerIDs)
+        return (
+            lmHead?(result.hidden) ?? model.embedTokens.asLinear(result.hidden),
+            result.captured)
+    }
+
+    public func embed(_ tokenIDs: MLXArray) -> MLXArray {
+        model.embedTokens(tokenIDs)
+    }
+
+    public func projectToLogits(_ hidden: MLXArray) -> MLXArray {
+        lmHead?(hidden) ?? model.embedTokens.asLinear(hidden)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
