@@ -90,4 +90,23 @@ struct DDTreeTests {
         #expect(verification.nextTokenID == 7)
         #expect(verification.discardedNodeCount == 1)
     }
+
+    @Test("Verifier rejects an unmatched root before accepting a branch")
+    func verifierRejectsUnmatchedRoot() throws {
+        let tree = DDTree(nodes: [
+            .init(tokenID: 1, parentID: nil, depth: 0, score: 1),
+            .init(tokenID: 2, parentID: 0, depth: 1, score: 1),
+        ])
+
+        let verification = try DDTreeVerifier.verify(
+            tree: tree,
+            rootPrediction: 7,
+            predictedTokenIDs: [2, 3]
+        )
+
+        #expect(verification.acceptedNodeIDs.isEmpty)
+        #expect(verification.acceptedTokenIDs.isEmpty)
+        #expect(verification.nextTokenID == 7)
+        #expect(verification.discardedNodeCount == 2)
+    }
 }

@@ -16,6 +16,28 @@ public struct DDTreeVerification: Sendable, Equatable {
 public enum DDTreeVerifier {
     public static func verify(
         tree: DDTree,
+        rootPrediction: Int32,
+        predictedTokenIDs: [Int32]
+    ) throws -> DDTreeVerification {
+        guard predictedTokenIDs.count == tree.nodes.count else {
+            throw DDTreeVerificationError.invalidPredictionCount(
+                expected: tree.nodes.count,
+                actual: predictedTokenIDs.count
+            )
+        }
+        guard rootPrediction == tree.rootTokenID else {
+            return .init(
+                acceptedNodeIDs: [],
+                acceptedTokenIDs: [],
+                nextTokenID: rootPrediction,
+                treeNodeCount: tree.nodes.count
+            )
+        }
+        return try verify(tree: tree, predictedTokenIDs: predictedTokenIDs)
+    }
+
+    public static func verify(
+        tree: DDTree,
         predictedTokenIDs: [Int32]
     ) throws -> DDTreeVerification {
         guard predictedTokenIDs.count == tree.nodes.count else {

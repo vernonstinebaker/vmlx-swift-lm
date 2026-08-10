@@ -91,6 +91,12 @@ final class Qwen35ContinuationTests: XCTestCase {
         abs(a - b).max().item(Float.self)
     }
 
+    private func sampleLastToken(_ logits: MLXArray) -> Int32 {
+        let token = argMax(logits[0, logits.dim(1) - 1, 0...], axis: -1).asType(.int32)
+        eval(token)
+        return token.item(Int32.self)
+    }
+
     // MARK: - Tests
 
     /// A warm continuation (prefix already in the cache, remainder prefilled
@@ -142,6 +148,117 @@ final class Qwen35ContinuationTests: XCTestCase {
         XCTAssertLessThanOrEqual(
             drift, max(noiseFloor * 10, 1e-3),
             "warm continuation diverged from full prefill (noise floor \(noiseFloor))")
+    }
+
+    func testSpeculativeDecodingCaptureAndEmbeddingHooks() throws {
+        MLXRandom.seed(17)
+        let model = try makeTinyModel()
+        let tokens = textTokens(6)
+
+        let expected = model.callAsFunction(
+            tokens,
+            cache: nil,
+            captureLayerIDs: []
+        ).logits
+        let captured = model.callAsFunction(
+            tokens,
+            cache: nil,
+            captureLayerIDs: [1, 3]
+        )
+        let embeddings = model.embed(tokens)
+        let projected = model.projectToLogits(embeddings)
+        eval(expected, captured.logits, embeddings, projected)
+
+        XCTAssertEqual(captured.logits.shape, [1, 6, 512])
+        XCTAssertLessThanOrEqual(maxAbsDiff(expected, captured.logits), 1e-6)
+        XCTAssertEqual(captured.capturedHiddenStates.keys.sorted(), [1, 3])
+        XCTAssertEqual(captured.capturedHiddenStates[1]?.shape, [1, 6, 64])
+        XCTAssertEqual(captured.capturedHiddenStates[3]?.shape, [1, 6, 64])
+        XCTAssertEqual(embeddings.shape, [1, 6, 64])
+        XCTAssertEqual(projected.shape, [1, 6, 512])
+    }
+
+    func testBranchVerifierMatchesIndependentAutoregressiveEvaluation() throws {
+        MLXRandom.seed(23)
+        let model = try makeTinyModel()
+        let prefix = textTokens(5)
+        let baseCache = model.newCache(parameters: nil)
+        let rootTokenID = sampleLastToken(model(prefix, cache: baseCache))
+
+        let rootCache = DDTreeCacheIntegration.fork(baseCache)
+        let acceptedChildTokenID = sampleLastToken(model(
+            MLXArray([rootTokenID]).reshaped(1, 1),
+            cache: rootCache
+        ))
+        let childCache = DDTreeCacheIntegration.fork(rootCache)
+        let acceptedGrandchildTokenID = sampleLastToken(model(
+            MLXArray([acceptedChildTokenID]).reshaped(1, 1),
+            cache: childCache
+        ))
+        let siblingTokenID = (acceptedChildTokenID + 1) % 512
+        let tree = DDTree(nodes: [
+            .init(tokenID: rootTokenID, parentID: nil, depth: 0, score: 1),
+            .init(tokenID: acceptedChildTokenID, parentID: 0, depth: 1, score: 1),
+            .init(tokenID: siblingTokenID, parentID: 0, depth: 1, score: 0),
+            .init(tokenID: acceptedGrandchildTokenID, parentID: 1, depth: 2, score: 1),
+        ])
+
+        let result = try DDTreeBranchVerifier.verify(
+            target: model,
+            tree: tree,
+            cache: baseCache,
+            rootPrediction: rootTokenID
+        )
+
+        XCTAssertEqual(result.positionIDs, [5, 6, 6, 7])
+        XCTAssertEqual(result.predictedTokenIDs[0], acceptedChildTokenID)
+        XCTAssertEqual(result.predictedTokenIDs[1], acceptedGrandchildTokenID)
+        XCTAssertEqual(result.verification.acceptedNodeIDs, [0, 1, 3])
+        XCTAssertEqual(result.verification.nextTokenID, result.predictedTokenIDs[3])
+        XCTAssertEqual(baseCache.map(\.offset).max(), 5)
+        XCTAssertEqual(result.cache.map(\.offset).max(), 8)
+    }
+
+    func testBranchVerifierIsolatesSiblingMambaState() throws {
+        MLXRandom.seed(29)
+        let model = try makeTinyModel()
+        let prefix = textTokens(4)
+        let baseCache = model.newCache(parameters: nil)
+        let rootTokenID = sampleLastToken(model(prefix, cache: baseCache))
+
+        let rootCache = DDTreeCacheIntegration.fork(baseCache)
+        let acceptedChildTokenID = sampleLastToken(model(
+            MLXArray([rootTokenID]).reshaped(1, 1),
+            cache: rootCache
+        ))
+        let siblingTokenID = (acceptedChildTokenID + 1) % 512
+        let first = DDTree(nodes: [
+            .init(tokenID: rootTokenID, parentID: nil, depth: 0, score: 1),
+            .init(tokenID: acceptedChildTokenID, parentID: 0, depth: 1, score: 1),
+            .init(tokenID: siblingTokenID, parentID: 0, depth: 1, score: 0),
+        ])
+        let second = DDTree(nodes: [
+            .init(tokenID: rootTokenID, parentID: nil, depth: 0, score: 1),
+            .init(tokenID: siblingTokenID, parentID: 0, depth: 1, score: 0),
+            .init(tokenID: acceptedChildTokenID, parentID: 0, depth: 1, score: 1),
+        ])
+
+        let firstResult = try DDTreeBranchVerifier.verify(
+            target: model,
+            tree: first,
+            cache: baseCache,
+            rootPrediction: rootTokenID
+        )
+        let secondResult = try DDTreeBranchVerifier.verify(
+            target: model,
+            tree: second,
+            cache: baseCache,
+            rootPrediction: rootTokenID
+        )
+
+        XCTAssertEqual(firstResult.predictedTokenIDs[1], secondResult.predictedTokenIDs[2])
+        XCTAssertEqual(firstResult.verification.nextTokenID, secondResult.verification.nextTokenID)
+        XCTAssertEqual(baseCache.map(\.offset).max(), 4)
     }
 
     /// With an image in turn 1, the rope delta the image accumulated must be
