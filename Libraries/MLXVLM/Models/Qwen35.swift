@@ -706,6 +706,22 @@ enum Qwen35Language {
             cache: [KVCache?]? = nil,
             positionIds: MLXArray? = nil
         ) -> MLXArray {
+            callAsFunctionCapturing(
+                inputs,
+                inputsEmbeds: inputsEmbeds,
+                cache: cache,
+                positionIds: positionIds,
+                captureLayerIDs: []
+            ).hidden
+        }
+
+        func callAsFunctionCapturing(
+            _ inputs: MLXArray,
+            inputsEmbeds: MLXArray? = nil,
+            cache: [KVCache?]? = nil,
+            positionIds: MLXArray? = nil,
+            captureLayerIDs: Set<Int>
+        ) -> (hidden: MLXArray, captured: [Int: MLXArray]) {
             var hiddenStates: MLXArray
             if let inputsEmbeds {
                 hiddenStates = inputsEmbeds
@@ -727,6 +743,8 @@ enum Qwen35Language {
                 faMask = nil
             }
             let ssmMask = createSSMMask(h: hiddenStates, cache: cacheArray?[ssmIdx] as? MambaCache)
+            var captured: [Int: MLXArray] = [:]
+            captured.reserveCapacity(captureLayerIDs.count)
 
             for (index, layer) in layers.enumerated() {
                 let layerSSMMask = layer.isLinear ? ssmMask : nil
@@ -737,9 +755,12 @@ enum Qwen35Language {
                     cache: cacheArray?[index],
                     positionIds: positionIds
                 )
+                if captureLayerIDs.contains(index) {
+                    captured[index] = hiddenStates
+                }
             }
 
-            return norm(hiddenStates)
+            return (norm(hiddenStates), captured)
         }
     }
 
@@ -883,12 +904,28 @@ enum Qwen35Language {
                 return KVCacheSimple()
             }
         }
+
+        func textOnlyForwardCapturing(
+            _ inputs: MLXArray,
+            cache: [KVCache]?,
+            captureLayerIDs: Set<Int>
+        ) -> (logits: MLXArray, capturedHiddenStates: [Int: MLXArray]) {
+            let result = model.callAsFunctionCapturing(
+                inputs,
+                cache: cache?.map { $0 as KVCache? },
+                captureLayerIDs: captureLayerIDs
+            )
+            return (
+                lmHead?(result.hidden) ?? model.embedTokens.asLinear(result.hidden),
+                result.captured
+            )
+        }
     }
 }
 
 // MARK: - Model
 
-public class Qwen35: Module, VLMModel {
+public class Qwen35: Module, VLMModel, HiddenStateCaptureModel, TokenEmbedderModel {
     @ModuleInfo(key: "vision_tower") private var visionModel: Qwen3VLVision.VisionModel
     @ModuleInfo(key: "language_model") fileprivate var languageModel: Qwen35Language.LanguageModel
 
@@ -1203,6 +1240,26 @@ public class Qwen35: Module, VLMModel {
             videoGridTHW: nil
         )
         return result
+    }
+
+    public func callAsFunction(
+        _ inputs: MLXArray,
+        cache: [KVCache]?,
+        captureLayerIDs: Set<Int>
+    ) -> (logits: MLXArray, capturedHiddenStates: [Int: MLXArray]) {
+        languageModel.textOnlyForwardCapturing(
+            inputs,
+            cache: cache,
+            captureLayerIDs: captureLayerIDs
+        )
+    }
+
+    public func embed(_ tokenIDs: MLXArray) -> MLXArray {
+        languageModel.model.embedTokens(tokenIDs)
+    }
+
+    public func projectToLogits(_ hidden: MLXArray) -> MLXArray {
+        languageModel.lmHead?(hidden) ?? languageModel.model.embedTokens.asLinear(hidden)
     }
 
     public func sanitize(weights: [String: MLXArray], metadata: [String: String]) -> [String:
