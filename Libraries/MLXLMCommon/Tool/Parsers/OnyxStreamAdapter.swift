@@ -16,6 +16,7 @@ private enum OnyxParseStep {
     case opened(OnyxHeader)
     case payload(OnyxHeader, Int)
     case closed(OnyxHeader, [Int])
+    case rejected(String)
 }
 
 /// Token-aware frame parser for the official Onyx control vocabulary.
@@ -36,7 +37,7 @@ private struct OnyxFrameParser {
         /// the first generated frame begins midway through its header.
         case header(tokens: [Int], primed: Bool)
         case payload(header: OnyxHeader, tokens: [Int])
-        case betweenFrames
+        case betweenFrames(reportedUnexpectedToken: Bool)
     }
 
     private let tokenizer: any Tokenizer
@@ -57,25 +58,39 @@ private struct OnyxFrameParser {
 
     mutating func push(_ token: Int) -> OnyxParseStep {
         if token == controls.start {
+            let interruptedFrame: String? =
+                switch state {
+                case .header(let tokens, _) where !tokens.isEmpty:
+                    "Onyx frame header was interrupted by <|start|>: "
+                        + tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false)
+                case .payload(let header, _):
+                    "Onyx \(description(of: header.recipient)) frame was interrupted by <|start|>"
+                case .header, .betweenFrames:
+                    nil
+                }
             state = .header(tokens: [], primed: false)
-            return .consumed
+            return interruptedFrame.map(OnyxParseStep.rejected) ?? .consumed
         }
 
         switch state {
         case .header(var tokens, let primed):
             if token == controls.message {
                 guard let header = parseHeader(tokens, primed: primed) else {
-                    state = .betweenFrames
-                    return .consumed
+                    state = .betweenFrames(reportedUnexpectedToken: false)
+                    return .rejected(
+                        "Invalid Onyx frame header: "
+                            + tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false))
                 }
                 state = .payload(header: header, tokens: [])
                 return .opened(header)
             }
-            guard token != controls.eom, token != controls.eot,
-                tokens.count < maximumHeaderTokens
-            else {
-                state = .betweenFrames
-                return .consumed
+            if token == controls.eom || token == controls.eot {
+                state = .betweenFrames(reportedUnexpectedToken: false)
+                return .rejected("Onyx frame header ended before <|message|>")
+            }
+            guard tokens.count < maximumHeaderTokens else {
+                state = .betweenFrames(reportedUnexpectedToken: false)
+                return .rejected("Onyx frame header exceeded \(maximumHeaderTokens) tokens")
             }
             tokens.append(token)
             state = .header(tokens: tokens, primed: primed)
@@ -83,7 +98,7 @@ private struct OnyxFrameParser {
 
         case .payload(let header, var tokens):
             if token == controls.eom || token == controls.eot {
-                state = .betweenFrames
+                state = .betweenFrames(reportedUnexpectedToken: false)
                 return .closed(header, tokens)
             }
             if case .tool = header.recipient {
@@ -92,15 +107,38 @@ private struct OnyxFrameParser {
             state = .payload(header: header, tokens: tokens)
             return .payload(header, token)
 
-        case .betweenFrames:
+        case .betweenFrames(let reportedUnexpectedToken):
+            if !reportedUnexpectedToken {
+                state = .betweenFrames(reportedUnexpectedToken: true)
+                let text = tokenizer.decode(tokenIds: [token], skipSpecialTokens: false)
+                return .rejected("Unexpected token between Onyx frames: \(text)")
+            }
             return .consumed
         }
     }
 
     mutating func finish() -> OnyxParseStep? {
-        defer { state = .betweenFrames }
-        guard case .payload(let header, let tokens) = state else { return nil }
-        return .closed(header, tokens)
+        defer { state = .betweenFrames(reportedUnexpectedToken: false) }
+        switch state {
+        case .payload(let header, _):
+            return .rejected(
+                "Incomplete Onyx \(description(of: header.recipient)) frame at generation end")
+        case .header(let tokens, _) where !tokens.isEmpty:
+            return .rejected(
+                "Incomplete Onyx frame header at generation end: "
+                    + tokenizer.decode(tokenIds: tokens, skipSpecialTokens: false))
+        case .header, .betweenFrames:
+            return nil
+        }
+    }
+
+    private func description(of recipient: OnyxRecipient) -> String {
+        switch recipient {
+        case .reasoning: "reasoning"
+        case .user: "user"
+        case .tool(let name): "tool \(name)"
+        case .unknown: "unknown-recipient"
+        }
     }
 
     private func parseHeader(_ tokens: [Int], primed: Bool) -> OnyxHeader? {
@@ -184,11 +222,19 @@ private struct OnyxProtocolDecoder {
                 let text = tokenizer.decode(tokenIds: payload, skipSpecialTokens: false)
                 guard let call = toolParser.parse(content: text, tools: tools),
                     call.function.name == recipient
-                else { return nil }
-                return .toolCall(call)
+                else {
+                    return .protocolError("Rejected Onyx tool frame for recipient \(recipient)")
+                }
+                return .toolCall(
+                    ToolCall(
+                        function: call.function,
+                        id: ToolCallFormat.atem.generateToolCallID()))
             case .unknown:
-                break
+                return .protocolError("Rejected Onyx frame with an empty recipient")
             }
+        case .rejected(let message):
+            isInsideReasoning = false
+            return .protocolError(message)
         }
         return nil
     }
@@ -198,6 +244,7 @@ private struct OnyxProtocolDecoder {
 struct OnyxStreamAdapter: TokenStreamDecoder {
     private var protocolDecoder: OnyxProtocolDecoder
     private var stopStringFilter: StopStringFilter
+    let additionalStopTokenIDs: Set<Int>
     let receivesStopTokens = true
 
     var isInsideReasoning: Bool { protocolDecoder.isInsideReasoning }
@@ -212,6 +259,8 @@ struct OnyxStreamAdapter: TokenStreamDecoder {
         }
         self.protocolDecoder = decoder
         self.stopStringFilter = StopStringFilter(stopStrings: stopStrings)
+        self.additionalStopTokenIDs = Set(
+            ["<|eot|>", "<|end_of_text|>"].compactMap(tokenizer.convertTokenToId))
     }
 
     mutating func push(_ token: Int, emit: (TokenStreamEvent) -> Bool) -> Bool {
@@ -245,6 +294,8 @@ struct OnyxStreamAdapter: TokenStreamDecoder {
                 return false
             }
             return emit(.toolCall(call))
+        case .protocolError(let message):
+            return emit(.protocolError(message))
         case .stop:
             return emit(.stop)
         }

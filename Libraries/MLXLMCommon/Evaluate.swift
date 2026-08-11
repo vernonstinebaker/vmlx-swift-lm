@@ -2719,6 +2719,8 @@ extension TokenLoopHandler {
 private struct TextToolTokenLoopHandler: TokenLoopHandler {
     typealias Output = Generation
 
+    private static let logger = Logger(
+        subsystem: "mlx-swift-lm", category: "TokenStreamProtocol")
     private var decoder: any TokenStreamDecoder
 
     init(
@@ -2815,6 +2817,10 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
             if case .terminated = emit(.toolCall(toolCall)) {
                 return .cancelled
             }
+            return .more
+
+        case .protocolError(let message):
+            Self.logger.error("\(message)")
             return .more
 
         case .stop:

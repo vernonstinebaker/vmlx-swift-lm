@@ -1071,6 +1071,34 @@ struct MuseGlimmerAgenticProtocolTests {
                 tools: Self.tools) == nil)
     }
 
+    @Test("ATEM EOS fallback and nullable strings preserve protocol values")
+    func atemFallbackAndNullableStrings() throws {
+        let parser = ATEMToolCallParser()
+        let nullableTools: [[String: any Sendable]] = [
+            [
+                "function": [
+                    "name": "edit.apply",
+                    "parameters": [
+                        "type": "object",
+                        "properties": [
+                            "patch": ["type": ["string", "null"]] as [String: any Sendable]
+                        ] as [String: any Sendable],
+                    ] as [String: any Sendable],
+                ] as [String: any Sendable]
+            ]
+        ]
+        let framed =
+            "<atem:function_calls><atem:invoke name=\"edit.apply\">"
+            + "<atem:parameter name=\"patch\">  line one\n  </atem:parameter>"
+            + "</atem:invoke></atem:function_calls>"
+        let call = try #require(parser.parse(content: framed, tools: nullableTools))
+        #expect(call.function.arguments["patch"] == .string("  line one\n  "))
+
+        let calls = parser.parseEOS(framed + "\n" + framed, tools: nullableTools)
+        #expect(calls.count == 2)
+        #expect(calls.allSatisfy { $0.function.name == "edit.apply" })
+    }
+
     @Test("token-level Onyx decoder separates reasoning, tools, and response")
     func tokenProtocolRouting() throws {
         let tokenizer = OnyxTestTokenizer()
@@ -1107,6 +1135,16 @@ struct MuseGlimmerAgenticProtocolTests {
         #expect(calls.count == 1)
         #expect(calls[0].function.name == "weather.get")
         #expect(calls[0].function.arguments["days"] == .int(3))
+        let callID = try #require(calls[0].id)
+        #expect(callID.hasPrefix("call_"))
+        #expect(decoder.additionalStopTokenIDs == Set([tokenizer.eot, tokenizer.endOfText]))
+
+        let rawMessages = DefaultMessageGenerator().generate(messages: [
+            .assistant("", toolCalls: calls),
+            .tool("sunny", id: callID, name: calls[0].function.name),
+        ])
+        #expect(rawMessages[1]["tool_call_id"] as? String == callID)
+        #expect(rawMessages[1]["name"] as? String == "weather.get")
 
         var answerDecoder = try #require(
             ToolCallFormat.atem.makeProtocolTokenStreamDecoder(
@@ -1122,6 +1160,76 @@ struct MuseGlimmerAgenticProtocolTests {
             }
         }
         #expect(answer == [.response("sunny")])
+    }
+
+    @Test("Onyx decoder emits distinct IDs for consecutive tool frames")
+    func consecutiveToolFrames() throws {
+        let tokenizer = OnyxTestTokenizer()
+        var decoder = try #require(
+            ToolCallFormat.atem.makeProtocolTokenStreamDecoder(
+                tokenizer: tokenizer, tools: Self.tools, stopStrings: []))
+        let payload =
+            "<atem:function_calls><atem:invoke name=\"weather.get\">"
+            + "<atem:parameter name=\"days\">3</atem:parameter>"
+            + "</atem:invoke></atem:function_calls>"
+        let tokens = [
+            tokenizer.id(" to=weather.get"), tokenizer.message, tokenizer.id(payload),
+            tokenizer.eom,
+            tokenizer.start, tokenizer.id("assistant to=weather.get"), tokenizer.message,
+            tokenizer.id(payload), tokenizer.eot,
+        ]
+        var calls: [ToolCall] = []
+        for token in tokens {
+            _ = decoder.push(token) { event in
+                if case .toolCall(let call) = event { calls.append(call) }
+                return true
+            }
+        }
+
+        #expect(calls.count == 2)
+        let firstID = try #require(calls[0].id)
+        let secondID = try #require(calls[1].id)
+        #expect(firstID != secondID)
+    }
+
+    @Test("Onyx decoder reports malformed frames and never commits truncated calls")
+    func malformedAndTruncatedFrames() throws {
+        let tokenizer = OnyxTestTokenizer()
+        var decoder = try #require(
+            ToolCallFormat.atem.makeProtocolTokenStreamDecoder(
+                tokenizer: tokenizer, tools: Self.tools, stopStrings: []))
+        let payload =
+            "<atem:function_calls><atem:invoke name=\"weather.get\">"
+            + "<atem:parameter name=\"days\">3</atem:parameter>"
+            + "</atem:invoke></atem:function_calls>"
+        let tokens = [
+            tokenizer.id(" to=weather.get"), tokenizer.message, tokenizer.id(payload),
+        ]
+        var events: [TokenStreamEvent] = []
+        for token in tokens {
+            _ = decoder.push(token) {
+                events.append($0)
+                return true
+            }
+        }
+        _ = decoder.finish {
+            events.append($0)
+            return true
+        }
+
+        #expect(!events.contains { if case .toolCall = $0 { true } else { false } })
+        #expect(events.contains { if case .protocolError = $0 { true } else { false } })
+    }
+
+    @Test("prompt cache accounting follows each protocol's rendered call shape")
+    func protocolSpecificCallAccounting() {
+        let calls = [
+            ToolCall(function: .init(name: "first", arguments: [:])),
+            ToolCall(function: .init(name: "second", arguments: [:])),
+        ]
+        let messages: [Chat.Message] = [.assistant("", toolCalls: calls)]
+        #expect(ToolCallFormat.gptOSS.promptCacheStructuredToolCallCount(in: messages) == 1)
+        #expect(ToolCallFormat.atem.promptCacheStructuredToolCallCount(in: messages) == 2)
     }
 
     @Test("Onyx decoder rejects recipient and invoke mismatches")
@@ -1148,6 +1256,7 @@ struct MuseGlimmerAgenticProtocolTests {
             return true
         }
         #expect(!events.contains { if case .toolCall = $0 { true } else { false } })
+        #expect(events.contains { if case .protocolError = $0 { true } else { false } })
     }
 
     @Test("format factory owns Onyx protocol selection")
@@ -1218,6 +1327,39 @@ struct MuseGlimmerOnyxCacheTests {
         #expect(represented == live + Array(prompt[4...]))
     }
 
+    @Test("splices after the latest of multiple committed tool frames")
+    func multiCallLiveCacheSplice() throws {
+        let tokenizer = OnyxTestTokenizer()
+        let rule = try #require(OnyxToolRestartRule(tokenizer: tokenizer))
+        let prompt = [
+            tokenizer.start, tokenizer.id("assistant to=weather.get"), tokenizer.message,
+            tokenizer.id("call one"), tokenizer.eom,
+            tokenizer.start, tokenizer.id("assistant to=weather.get"), tokenizer.message,
+            tokenizer.id("call two"), tokenizer.eot,
+            tokenizer.start, tokenizer.id("tool weather.get"), tokenizer.message,
+            tokenizer.id("sunny"), tokenizer.eot,
+        ]
+        let live = [1, 2, tokenizer.id("private plan"), tokenizer.eot]
+        let turn = PromptCacheTurn(
+            promptTokens: prompt,
+            isToolResultContinuation: true,
+            structuredToolCallCount: 2)
+        let cache = PromptCacheState(
+            cachedTokens: live,
+            processedTokenCount: live.count,
+            mainCacheIsAligned: true,
+            draftCacheIsAligned: true,
+            isTrimmable: true)
+
+        let decision = try #require(rule.reuse(turn: turn, cache: cache))
+        guard case .appendSuffix(let suffixStart, let represented) = decision else {
+            Issue.record("expected a multi-call suffix splice")
+            return
+        }
+        #expect(suffixStart == 10)
+        #expect(represented == live + Array(prompt[10...]))
+    }
+
     @Test("refuses ambiguous or non-committed Onyx restarts")
     func failClosedCacheReuse() throws {
         let tokenizer = OnyxTestTokenizer()
@@ -1250,6 +1392,7 @@ struct MuseGlimmerOnyxCacheTests {
 }
 
 private final class OnyxTestTokenizer: Tokenizer, @unchecked Sendable {
+    let endOfText = 200_001
     let start = 200_022
     let message = 200_023
     let eom = 200_007
@@ -1260,6 +1403,7 @@ private final class OnyxTestTokenizer: Tokenizer, @unchecked Sendable {
 
     init() {
         for (token, id) in [
+            ("<|end_of_text|>", endOfText),
             ("<|start|>", start), ("<|message|>", message),
             ("<|eom|>", eom), ("<|eot|>", eot),
         ] {

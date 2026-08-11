@@ -146,13 +146,40 @@ public enum MuseGlimmerProtocolTests {
                 ] as [String: any Sendable],
             ]
         ]
-        let call = ToolCall(
-            function: .init(name: "weather.get", arguments: ["city": "Paris"]),
-            id: "call_fixture")
+        guard
+            var decoder = ToolCallFormat.atem.makeProtocolTokenStreamDecoder(
+                tokenizer: tokenizer, tools: tools, stopStrings: [])
+        else {
+            throw IntegrationTestFailure(
+                "ATEM protocol adapter rejected the production Muse Glimmer tokenizer")
+        }
+        let payload =
+            "<atem:function_calls><atem:invoke name=\"weather.get\">"
+            + "<atem:parameter name=\"city\">Paris</atem:parameter>"
+            + "</atem:invoke></atem:function_calls>"
+        let frameTokens =
+            tokenizer.encode(text: " to=weather.get", addSpecialTokens: false)
+            + [200_023]
+            + tokenizer.encode(text: payload, addSpecialTokens: false)
+            + [200_008]
+        var parsedCalls: [ToolCall] = []
+        for token in frameTokens {
+            _ = decoder.push(token) { event in
+                if case .toolCall(let call) = event { parsedCalls.append(call) }
+                return true
+            }
+        }
+        try check(parsedCalls.count == 1, "Onyx decoder did not emit the production ATEM call")
+        let call = parsedCalls[0]
+        guard let callID = call.id else {
+            throw IntegrationTestFailure("Onyx decoder emitted a tool call without an id")
+        }
         let messages = DefaultMessageGenerator().generate(messages: [
             .user("Weather in Paris?"),
             .assistant("", toolCalls: [call]),
-            .tool(#"{"forecast":"sunny"}"#, id: "call_fixture"),
+            .tool(
+                #"{"forecast":"sunny"}"#, id: callID,
+                name: call.function.name),
         ])
         let rendered = try tokenizer.applyChatTemplate(
             messages: messages, tools: tools, additionalContext: nil)
@@ -167,9 +194,8 @@ public enum MuseGlimmerProtocolTests {
             text.hasSuffix("<|start|>assistant"),
             "Muse Glimmer template omitted the assistant continuation prompt")
         try check(
-            ToolCallFormat.atem.makeProtocolTokenStreamDecoder(
-                tokenizer: tokenizer, tools: tools, stopStrings: []) != nil,
-            "ATEM protocol adapter rejected the production Muse Glimmer tokenizer")
+            decoder.additionalStopTokenIDs == Set([200_001, 200_008]),
+            "Onyx decoder did not declare <|end_of_text|>/<|eot|> as stop tokens")
     }
 }
 

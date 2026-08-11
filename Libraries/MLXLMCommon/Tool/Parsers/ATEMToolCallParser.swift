@@ -70,6 +70,26 @@ public struct ATEMToolCallParser: ToolCallParser, Sendable {
         return ToolCall(function: .init(name: functionName, arguments: arguments))
     }
 
+    public func parseEOS(
+        _ toolCallBuffer: String, tools: [[String: any Sendable]]?
+    ) -> [ToolCall] {
+        guard let startTag, let endTag else { return [] }
+        var calls: [ToolCall] = []
+        var searchStart = toolCallBuffer.startIndex
+        while let start = toolCallBuffer.range(
+            of: startTag, range: searchStart ..< toolCallBuffer.endIndex),
+            let end = toolCallBuffer.range(
+                of: endTag, range: start.upperBound ..< toolCallBuffer.endIndex)
+        {
+            let framed = String(toolCallBuffer[start.lowerBound ..< end.upperBound])
+            if let call = parse(content: framed, tools: tools) {
+                calls.append(call)
+            }
+            searchStart = end.upperBound
+        }
+        return calls
+    }
+
     // MARK: - Structural scanning
 
     private func element(
@@ -165,7 +185,16 @@ public struct ATEMToolCallParser: ToolCallParser, Sendable {
         }
         let types = extractTypesFromSchema(schema)
         let normalizedTypes = Set(types.map { $0.lowercased() })
-        if normalizedTypes == ["string"] {
+        let nonNullTypes = normalizedTypes.subtracting(["null"])
+        if !nonNullTypes.isEmpty,
+            nonNullTypes.isSubset(of: ["string", "str", "text"])
+        {
+            let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedTypes.contains("null"),
+                ["null", "none", "nil"].contains(trimmed.lowercased())
+            {
+                return NSNull()
+            }
             // The official Onyx contract explicitly preserves string spaces.
             return rawValue
         }
