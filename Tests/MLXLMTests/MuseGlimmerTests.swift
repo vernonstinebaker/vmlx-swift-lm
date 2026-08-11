@@ -1,5 +1,6 @@
 // Copyright © 2026 Apple Inc.
 
+import CoreImage
 import Foundation
 import MLX
 import MLXLMCommon
@@ -893,4 +894,86 @@ struct MuseGlimmerForwardTests {
         #expect(caches[3] is RotatingKVCache)
         #expect(caches[4] is StandardKVCache)
     }
+}
+
+@Suite("MuseGlimmer image token budget")
+struct MuseGlimmerImageBudgetTests {
+
+    static func processor(maxImageTokens: Int = 4096) -> MuseGlimmerProcessor {
+        MuseGlimmerProcessor(
+            MuseGlimmerProcessorConfiguration(
+                imageProcessor: .init(maxImageTokens: maxImageTokens)),
+            tokenizer: MuseGlimmerStubTokenizer())
+    }
+
+    static func image(width: Int, height: Int) -> CIImage {
+        CIImage(color: .gray).cropped(
+            to: CGRect(x: 0, y: 0, width: width, height: height))
+    }
+
+    /// The budget is the dominant latency lever, so it has to actually bind.
+    @Test("configured maxImageTokens bounds the merged token count")
+    func configuredBudget() throws {
+        let large = Self.image(width: 2400, height: 2400)
+        for budget in [256, 1024, 4096] {
+            let (patches, frames) = try Self.processor(maxImageTokens: budget)
+                .preprocess(image: large, processing: nil)
+            let merged = frames.product / 4
+            #expect(merged <= budget)
+            // Should use most of the budget rather than under-shooting badly.
+            #expect(merged > budget / 2)
+            #expect(patches.dim(0) == frames.product)
+            #expect(patches.dim(1) == 2 * 3 * 14 * 14)
+        }
+    }
+
+    /// `maxPixels` is the model-agnostic per-call hook; one merged token covers
+    /// patch_size * merge_size squared = 784 pixels.
+    @Test("per-call maxPixels lowers the budget below the configured one")
+    func perCallBudget() throws {
+        let large = Self.image(width: 2400, height: 2400)
+        let processor = Self.processor(maxImageTokens: 4096)
+
+        let (_, uncapped) = try processor.preprocess(image: large, processing: nil)
+        #expect(uncapped.product / 4 > 3000)
+
+        let (_, capped) = try processor.preprocess(
+            image: large, processing: .init(maxPixels: 256 * 784))
+        #expect(capped.product / 4 <= 256)
+        #expect(capped.h % 2 == 0 && capped.w % 2 == 0)
+    }
+
+    /// A caller-supplied resize bounds the source instead of being ignored, but
+    /// the result still lands on the patch/merge grid.
+    @Test("resize bounds the source and stays grid-aligned")
+    func resizeBound() throws {
+        let large = Self.image(width: 2400, height: 2400)
+        let (_, frames) = try Self.processor().preprocess(
+            image: large, processing: .init(resize: CGSize(width: 560, height: 560)))
+        #expect(frames.h == 40 && frames.w == 40)  // 560 / 14
+        #expect(frames.h % 2 == 0 && frames.w % 2 == 0)
+
+        // A resize larger than the source must not upscale.
+        let small = Self.image(width: 448, height: 448)
+        let (_, unchanged) = try Self.processor().preprocess(
+            image: small, processing: .init(resize: CGSize(width: 4000, height: 4000)))
+        #expect(unchanged.h == 32 && unchanged.w == 32)
+    }
+}
+
+/// Minimal tokenizer: the budget tests only exercise `preprocess`, which never
+/// touches it.
+private struct MuseGlimmerStubTokenizer: Tokenizer {
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String { "" }
+    func convertTokenToId(_ token: String) -> Int? { nil }
+    func convertIdToToken(_ id: Int) -> String? { nil }
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [] }
 }

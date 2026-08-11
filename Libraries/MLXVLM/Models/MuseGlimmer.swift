@@ -1227,13 +1227,24 @@ public struct MuseGlimmerProcessorConfiguration: Codable, Sendable {
                 try container.decodeIfPresent([CGFloat].self, forKey: .imageStd) ?? [0.5, 0.5, 0.5]
         }
 
-        public init() {
-            self.patchSize = 14
-            self.temporalPatchSize = 2
-            self.mergeSize = 2
-            self.maxImageTokens = 4096
-            self.imageMean = [0.5, 0.5, 0.5]
-            self.imageStd = [0.5, 0.5, 0.5]
+        /// Builds a configuration in code, chiefly so a caller can lower
+        /// ``maxImageTokens`` from the checkpoint's 4096. See the note in
+        /// ``MuseGlimmerProcessor/preprocess(image:processing:)`` on why that
+        /// budget dominates time-to-first-token.
+        public init(
+            patchSize: Int = 14,
+            temporalPatchSize: Int = 2,
+            mergeSize: Int = 2,
+            maxImageTokens: Int = 4096,
+            imageMean: [CGFloat] = [0.5, 0.5, 0.5],
+            imageStd: [CGFloat] = [0.5, 0.5, 0.5]
+        ) {
+            self.patchSize = patchSize
+            self.temporalPatchSize = temporalPatchSize
+            self.mergeSize = mergeSize
+            self.maxImageTokens = maxImageTokens
+            self.imageMean = imageMean
+            self.imageStd = imageStd
         }
 
         public var imageMeanTuple: (CGFloat, CGFloat, CGFloat) {
@@ -1257,6 +1268,10 @@ public struct MuseGlimmerProcessorConfiguration: Codable, Sendable {
         self.imageProcessor =
             try container.decodeIfPresent(ImageProcessor.self, forKey: .imageProcessor)
             ?? ImageProcessor()
+    }
+
+    public init(imageProcessor: ImageProcessor = ImageProcessor()) {
+        self.imageProcessor = imageProcessor
     }
 }
 
@@ -1332,17 +1347,39 @@ public struct MuseGlimmerProcessor: UserInputProcessor {
         let factor = imageConfig.patchSize * imageConfig.mergeSize
 
         var userProcessing = processing ?? UserInput.Processing()
-        let extent = image.extent
+
+        // The token budget dominates latency, because each merged token becomes a
+        // prompt token that has to be prefilled through the full text stack — an
+        // image at the default 4096 can cost tens of seconds before the first
+        // output token. `maxPixels` is the documented per-call hook for exactly
+        // this, and one merged token covers `factor * factor` pixels, so the two
+        // budgets convert directly.
+        var maxTokens = imageConfig.maxImageTokens
+        if let maxPixels = userProcessing.maxPixels {
+            maxTokens = min(maxTokens, max(1, maxPixels / (factor * factor)))
+        }
+
+        // A caller-supplied `resize` bounds the source rather than replacing the
+        // target: an off-grid size would break patch/merge alignment and the token
+        // count, but silently ignoring the request would leave a caller no way to
+        // trade resolution for latency.
+        var sourceHeight = Int(image.extent.height.rounded())
+        var sourceWidth = Int(image.extent.width.rounded())
+        if let resize = userProcessing.resize, resize.width > 0, resize.height > 0 {
+            sourceHeight = min(sourceHeight, Int(resize.height.rounded()))
+            sourceWidth = min(sourceWidth, Int(resize.width.rounded()))
+        }
+
         let (targetHeight, targetWidth) = museSmartResize(
-            height: Int(extent.height.rounded()),
-            width: Int(extent.width.rounded()),
+            height: sourceHeight,
+            width: sourceWidth,
             factor: factor,
-            maxTokens: imageConfig.maxImageTokens
+            maxTokens: maxTokens
         )
         let targetSize = CGSize(width: targetWidth, height: targetHeight)
 
-        // Override any caller-supplied resize: an off-grid size would break the
-        // patch/merge alignment and the token count.
+        // Hand `MediaProcessing.apply` the grid-aligned size, so any resize it
+        // performs matches what the patchifier below assumes.
         userProcessing.resize = targetSize
 
         let processed = MediaProcessing.apply(image, processing: userProcessing)
