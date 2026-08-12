@@ -755,9 +755,12 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        // Nemotron 3.5 Lightning ships a multi-token-prediction head (mtp.*) that
+        // the causal LM body does not consume; drop it to avoid holding dead weights.
+        let filtered = weights.filter { !($0.key.hasPrefix("mtp.") || $0.key == "mtp" ) }
         var sanitized = [String: MLXArray]()
 
-        for (key, value) in weights {
+        for (key, value) in filtered {
             var finalValue = value
 
             // Handle conv1d weight axis swap
@@ -852,6 +855,7 @@ public struct NemotronHConfiguration: Codable, Sendable {
         case nSharedExperts = "n_shared_experts"
         case numExpertsPerTok = "num_experts_per_tok"
         case hybridOverridePattern = "hybrid_override_pattern"
+        case layersBlockType = "layers_block_type"
         case layerNormEpsilon = "layer_norm_epsilon"
         case mlpBias = "mlp_bias"
         case useBias = "use_bias"
@@ -867,9 +871,21 @@ public struct NemotronHConfiguration: Codable, Sendable {
         case timeStepLimitMax = "time_step_limit_max"
     }
 
+    /// Maps a `layers_block_type` name (Nemotron 3.5 Lightning) to the single-char
+    /// pattern code the backbone builds its block list from.
+    private static func blockTypePatternChar(_ blockType: String) -> Character {
+        switch blockType {
+        case "mamba": return "M"
+        case "attention": return "*"
+        case "moe": return "E"
+        case "mlp": return "-"
+        default:
+            fatalError("Unknown NemotronH layers_block_type: \(blockType)")
+        }
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-
         modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "nemotron_h"
         vocabSize = try container.decode(Int.self, forKey: .vocabSize)
         hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
@@ -905,17 +921,24 @@ public struct NemotronHConfiguration: Codable, Sendable {
         routedScalingFactor =
             try container.decodeIfPresent(Float.self, forKey: .routedScalingFactor) ?? 1.0
 
-        // Handle hybrid_override_pattern - can be string or array of strings
+        // Handle hybrid_override_pattern - can be string or array of strings.
+        // Nemotron 3.5 Lightning omits it and supplies layers_block_type instead,
+        // which is normalized to the same single-char codes the backbone expects.
         if let patternString = try? container.decode(String.self, forKey: .hybridOverridePattern) {
             hybridOverridePattern = patternString
         } else if let patternArray = try? container.decode(
             [String].self, forKey: .hybridOverridePattern)
         {
             hybridOverridePattern = patternArray.joined()
+        } else if let blockTypes = try? container.decode(
+            [String].self, forKey: .layersBlockType)
+        {
+            hybridOverridePattern = blockTypes.map { Self.blockTypePatternChar($0) }.joined()
+            numHiddenLayers = hybridOverridePattern.count
         } else {
             throw DecodingError.dataCorruptedError(
                 forKey: .hybridOverridePattern, in: container,
-                debugDescription: "hybrid_override_pattern must be string or array of strings")
+                debugDescription: "hybrid_override_pattern or layers_block_type must be provided")
         }
 
         // Handle time_step_limit - can be array [min, max] or separate fields
