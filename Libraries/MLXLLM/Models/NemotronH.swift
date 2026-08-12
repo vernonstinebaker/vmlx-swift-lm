@@ -799,6 +799,13 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
 
 // MARK: - Configuration
 
+/// Single-key coding key for decoding `layers_block_type` (Nemotron 3.5 Lightning)
+/// without polluting the main CodingKeys enum, which would otherwise force a
+/// matching stored property and break synthesized Encodable conformance.
+private enum LayersBlockKey: String, CodingKey {
+    case layersBlockType = "layers_block_type"
+}
+
 public struct NemotronHConfiguration: Codable, Sendable {
     public var modelType: String = "nemotron_h"
     public var vocabSize: Int
@@ -855,7 +862,6 @@ public struct NemotronHConfiguration: Codable, Sendable {
         case nSharedExperts = "n_shared_experts"
         case numExpertsPerTok = "num_experts_per_tok"
         case hybridOverridePattern = "hybrid_override_pattern"
-        case layersBlockType = "layers_block_type"
         case layerNormEpsilon = "layer_norm_epsilon"
         case mlpBias = "mlp_bias"
         case useBias = "use_bias"
@@ -873,7 +879,7 @@ public struct NemotronHConfiguration: Codable, Sendable {
 
     /// Maps a `layers_block_type` name (Nemotron 3.5 Lightning) to the single-char
     /// pattern code the backbone builds its block list from.
-    private static func blockTypePatternChar(_ blockType: String) -> Character {
+    private static func blockTypePatternChar(_ blockType: String) -> String {
         switch blockType {
         case "mamba": return "M"
         case "attention": return "*"
@@ -930,8 +936,8 @@ public struct NemotronHConfiguration: Codable, Sendable {
             [String].self, forKey: .hybridOverridePattern)
         {
             hybridOverridePattern = patternArray.joined()
-        } else if let blockTypes = try? container.decode(
-            [String].self, forKey: .layersBlockType)
+        } else if let blockTypes = try? decoder.container(keyedBy: LayersBlockKey.self)
+            .decode([String].self, forKey: .layersBlockType)
         {
             hybridOverridePattern = blockTypes.map { Self.blockTypePatternChar($0) }.joined()
             numHiddenLayers = hybridOverridePattern.count

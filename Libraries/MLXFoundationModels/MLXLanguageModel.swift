@@ -895,8 +895,6 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
         /// a catchable Swift error.
         private static let logger = Logger(
             subsystem: "com.apple.FoundationModels-MLX", category: "Prewarm")
-        private static let protocolLogger = Logger(
-            subsystem: "com.apple.FoundationModels-MLX", category: "TokenStreamProtocol")
 
         /// Prewarms the model: loads weights and pre-compiles Metal shaders so
         /// the first `respond()` pays no cold-start shader-JIT cost.
@@ -1497,68 +1495,34 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                 maxTokens: requestedMaxTokens ?? Self.defaultMaxTokens,
                 requestedTemperature: requestedTemperature,
                 samplingConfiguration: samplingConfiguration)
-            let format = context.configuration.toolCallFormat ?? .json
             var router = AllowedToolOutputRouter(
-                format: format,
+                format: context.configuration.toolCallFormat ?? .json,
                 tools: toolSpecs,
                 reasoning: reasoning)
-            var protocolDecoder = format.makeProtocolTokenStreamDecoder(
-                tokenizer: context.tokenizer,
-                tools: toolSpecs,
-                stopStrings: context.configuration.effectiveStopStrings)
             var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
             var result = AllowedToolGenerationResult()
-            let (stream, task) = try generateProtocolTokensTask(
-                input: input,
-                parameters: params,
-                context: context,
-                decoder: protocolDecoder)
+            let (stream, task) = try generateTokensTask(
+                input: input, parameters: params, context: context)
 
             do {
-                generationLoop: for await generation in stream {
+                for await generation in stream {
                     try Task.checkCancellation()
                     switch generation {
                     case .token(let token):
-                        if var decoder = protocolDecoder {
-                            if decoder.isInsideReasoning {
-                                result.reasoningTokenCount += 1
-                            }
-                            var reasoningText = ""
-                            var shouldContinue = true
-                            let decoderContinues = decoder.push(token) { event in
-                                shouldContinue = consumeProtocolEvent(
-                                    event, result: &result, reasoningText: &reasoningText)
-                                return shouldContinue
-                            }
-                            protocolDecoder = decoder
-                            if !reasoningText.isEmpty {
+                        if router.isInsideReasoning {
+                            result.reasoningTokenCount += 1
+                        }
+                        detokenizer.append(token: token)
+                        if let chunk = detokenizer.next() {
+                            let reasoningChunks = consumeAllowedEvents(
+                                router.process(chunk), result: &result)
+                            for text in reasoningChunks {
                                 await Self.emit(
-                                    text: reasoningText,
+                                    text: text,
                                     entryID: reasoningEntryID,
                                     destination: .reasoning,
                                     into: channel)
                                 try Task.checkCancellation()
-                            }
-                            if !decoderContinues || !shouldContinue {
-                                task.cancel()
-                                break generationLoop
-                            }
-                        } else {
-                            if router.isInsideReasoning {
-                                result.reasoningTokenCount += 1
-                            }
-                            detokenizer.append(token: token)
-                            if let chunk = detokenizer.next() {
-                                let reasoningChunks = consumeAllowedEvents(
-                                    router.process(chunk), result: &result)
-                                for text in reasoningChunks {
-                                    await Self.emit(
-                                        text: text,
-                                        entryID: reasoningEntryID,
-                                        destination: .reasoning,
-                                        into: channel)
-                                    try Task.checkCancellation()
-                                }
                             }
                         }
                     case .info(let info):
@@ -1572,44 +1536,17 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             }
 
             await task.value
-            let finalReasoningText: String
-            if var decoder = protocolDecoder {
-                result.endedInsideReasoning = decoder.isInsideReasoning
-                var reasoningText = ""
-                _ = decoder.finish { event in
-                    consumeProtocolEvent(
-                        event, result: &result, reasoningText: &reasoningText)
-                }
-                protocolDecoder = decoder
-                finalReasoningText = reasoningText
-            } else {
-                let chunks = consumeAllowedEvents(router.finish(), result: &result)
-                finalReasoningText = chunks.joined()
-                result.endedInsideReasoning = router.isInsideReasoning
-            }
-            if !finalReasoningText.isEmpty {
+            let finalReasoningChunks = consumeAllowedEvents(
+                router.finish(), result: &result)
+            for text in finalReasoningChunks {
                 await Self.emit(
-                    text: finalReasoningText,
+                    text: text,
                     entryID: reasoningEntryID,
                     destination: .reasoning,
                     into: channel)
             }
+            result.endedInsideReasoning = router.isInsideReasoning
             return result
-        }
-
-        private func consumeProtocolEvent(
-            _ event: TokenStreamEvent,
-            result: inout AllowedToolGenerationResult,
-            reasoningText: inout String
-        ) -> Bool {
-            switch event {
-            case .reasoning(let text): reasoningText += text
-            case .response(let text): result.responseText += text
-            case .toolCall(let call): result.toolCalls.append(call)
-            case .protocolError(let message): Self.protocolLogger.error("\(message)")
-            case .stop: return false
-            }
-            return true
         }
 
         private func consumeAllowedEvents(
@@ -1832,9 +1769,10 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
         ///
         /// Routes thinking delimited by the model's reasoning markers to
         /// `.reasoning` events and the rest to `.response`, using a raw
-        /// protocol-neutral token decoder when the format owns framing, or a
-        /// self-owned `NaiveStreamingDetokenizer` for ordinary formats. The loop
-        /// sees real token IDs for an accurate reasoning token count.
+        /// `generateTokens` stream + a self-owned `NaiveStreamingDetokenizer`
+        /// (bypassing `ToolCallProcessor`) so the scanner sees clean detokenized
+        /// text — no second fragmentation source — and the loop sees real token
+        /// IDs for an accurate reasoning token count.
         private func runReasoning(
             input: LMInput,
             reasoningConfig: ReasoningConfig,
@@ -1855,107 +1793,43 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
 
             var emitter = ReasoningEventEmitter(
                 config: reasoningConfig, primedInside: primedInside)
-            let format = context.configuration.toolCallFormat ?? .json
-            var protocolDecoder = format.makeProtocolTokenStreamDecoder(
-                tokenizer: context.tokenizer,
-                tools: nil,
-                stopStrings: context.configuration.effectiveStopStrings)
             var detokenizer = NaiveStreamingDetokenizer(tokenizer: context.tokenizer)
             var reasoningTokenCount = 0
             var completionInfo: GenerateCompletionInfo?
-            let (stream, task) = try generateProtocolTokensTask(
-                input: input,
-                parameters: params,
-                context: context,
-                decoder: protocolDecoder)
 
-            do {
-                generationLoop: for await generation in stream {
-                    try Task.checkCancellation()
-                    switch generation {
-                    case .token(let token):
-                        if var decoder = protocolDecoder {
-                            if decoder.isInsideReasoning {
-                                reasoningTokenCount += 1
-                            }
-                            var segments: [ReasoningEventEmitter.Segment] = []
-                            var shouldContinue = true
-                            let decoderContinues = decoder.push(token) { event in
-                                switch event {
-                                case .reasoning(let text): segments.append(.reasoning(text))
-                                case .response(let text): segments.append(.response(text))
-                                case .toolCall: break
-                                case .protocolError(let message):
-                                    Self.protocolLogger.error("\(message)")
-                                case .stop: shouldContinue = false
-                                }
-                                return shouldContinue
-                            }
-                            protocolDecoder = decoder
-                            for segment in segments {
-                                await Self.send(
-                                    segment, responseEntryID: responseEntryID,
-                                    reasoningEntryID: reasoningEntryID, channel: channel)
-                            }
-                            if !decoderContinues || !shouldContinue {
-                                task.cancel()
-                                break generationLoop
-                            }
-                        } else {
-                            // One `.token` == one real token, so this is a true
-                            // token count. Closing delimiters are deliberately
-                            // attributed to reasoning until the emitter consumes
-                            // them, then the final usage count is clamped.
-                            if emitter.isInsideReasoning {
-                                reasoningTokenCount += 1
-                            }
-                            detokenizer.append(token: token)
-                            if let chunk = detokenizer.next() {
-                                for segment in emitter.process(chunk) {
-                                    await Self.send(
-                                        segment, responseEntryID: responseEntryID,
-                                        reasoningEntryID: reasoningEntryID, channel: channel)
-                                }
-                            }
+            for await generation in try generateTokens(
+                input: input, parameters: params, context: context
+            ) {
+                try Task.checkCancellation()
+                switch generation {
+                case .token(let token):
+                    // One `.token` == one real token, so this is a true token
+                    // count (not a chunk count). Attribute it to reasoning while
+                    // the scanner is inside a thinking span. This generously
+                    // counts the closing-delimiter tokens as reasoning (the
+                    // emitter only flips state once `process` consumes the full
+                    // `</think>`); it remains a true token count and the clamp
+                    // below keeps it ≤ total.
+                    if emitter.isInsideReasoning {
+                        reasoningTokenCount += 1
+                    }
+                    detokenizer.append(token: token)
+                    if let chunk = detokenizer.next() {
+                        for segment in emitter.process(chunk) {
+                            await Self.send(
+                                segment, responseEntryID: responseEntryID,
+                                reasoningEntryID: reasoningEntryID, channel: channel)
                         }
-                    case .info(let info):
-                        completionInfo = info
                     }
+                case .info(let info):
+                    completionInfo = info
                 }
-            } catch {
-                task.cancel()
-                await task.value
-                throw error
             }
-            await task.value
 
-            let endedInsideReasoning: Bool
-            if var decoder = protocolDecoder {
-                endedInsideReasoning = decoder.isInsideReasoning
-                var segments: [ReasoningEventEmitter.Segment] = []
-                _ = decoder.finish { event in
-                    switch event {
-                    case .reasoning(let text): segments.append(.reasoning(text))
-                    case .response(let text): segments.append(.response(text))
-                    case .toolCall, .stop: break
-                    case .protocolError(let message):
-                        Self.protocolLogger.error("\(message)")
-                    }
-                    return true
-                }
-                for segment in segments {
-                    await Self.send(
-                        segment, responseEntryID: responseEntryID,
-                        reasoningEntryID: reasoningEntryID, channel: channel)
-                }
-                protocolDecoder = decoder
-            } else {
-                for segment in emitter.finalize() {
-                    await Self.send(
-                        segment, responseEntryID: responseEntryID,
-                        reasoningEntryID: reasoningEntryID, channel: channel)
-                }
-                endedInsideReasoning = emitter.isInsideReasoning
+            for segment in emitter.finalize() {
+                await Self.send(
+                    segment, responseEntryID: responseEntryID,
+                    reasoningEntryID: reasoningEntryID, channel: channel)
             }
 
             // If generation ended while still inside a thinking block, the model
@@ -1963,7 +1837,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             // emitting `</think>`). Signal it so a consumer doesn't mistake an
             // empty or partial answer for the model's chosen response — mirrors
             // the guided path's `incompleteOutput` convention.
-            if endedInsideReasoning {
+            if emitter.isInsideReasoning {
                 await Self.emitMetadata(
                     ["incompleteOutput": true], entryID: responseEntryID, into: channel)
             }
