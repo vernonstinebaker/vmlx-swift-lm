@@ -95,26 +95,54 @@ public actor BatchEngine {
         continuation.onTermination = { @Sendable _ in
             Task { await self.cancel(id) }
         }
+        // Protocol-based models (e.g. Muse Glimmer's Onyx/ATEM, GPT-OSS Harmony)
+        // frame reasoning/response/tool segments as control tokens. The naive
+        // detokenizer would leak those control tokens into response text, so when
+        // the model declares a framed protocol, route tokens through its decoder.
+        let protocolDecoder = context.configuration.toolCallFormat?
+            .makeProtocolTokenStreamDecoder(
+                tokenizer: tokenizer,
+                tools: nil,
+                stopStrings: Set(parameters.extraStopStrings))
         Task {
             var detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
             var stopFilter = StopStringFilter(stopStrings: Set(parameters.extraStopStrings))
+            var streamDecoder = protocolDecoder
             var stopped = false
             for await event in tokenStream {
                 switch event {
                 case let .token(token):
-                    detokenizer.append(token: token)
-                    if let text = detokenizer.next() {
-                        let filtered = stopFilter.process(text)
-                        if let text = filtered.text {
-                            continuation.yield(.chunk(text))
-                        }
-                        if filtered.stopped {
-                            stopped = true
+                    if var decoder = streamDecoder {
+                        let keepGoing = Self.routeProtocolToken(
+                            token,
+                            through: &decoder,
+                            continuation: continuation,
+                            stopFilter: &stopFilter,
+                            stopped: &stopped)
+                        streamDecoder = decoder
+                        if !keepGoing, stopped {
                             self.cancel(id)
+                        }
+                    } else {
+                        detokenizer.append(token: token)
+                        if let text = detokenizer.next() {
+                            let filtered = stopFilter.process(text)
+                            if let text = filtered.text {
+                                continuation.yield(.chunk(text))
+                            }
+                            if filtered.stopped {
+                                stopped = true
+                                self.cancel(id)
+                            }
                         }
                     }
                 case let .info(info):
-                    if !stopped, let tail = stopFilter.finish() {
+                    if var decoder = streamDecoder {
+                        Self.finishProtocol(
+                            decoder: &decoder, stopped: stopped,
+                            continuation: continuation)
+                        streamDecoder = decoder
+                    } else if !stopped, let tail = stopFilter.finish() {
                         continuation.yield(.chunk(tail))
                     }
                     detokenizer.startNewSegment()
@@ -129,6 +157,60 @@ public actor BatchEngine {
             continuation.finish()
         }
         return stream
+    }
+
+    /// Routes a single token through a framed protocol decoder and emits the
+    /// resulting `Generation` events. Returns `false` when the decoder signals
+    /// stop. Mirrors the standard `TextToolTokenLoopHandler` event mapping.
+    private nonisolated static func routeProtocolToken(
+        _ token: Int,
+        through decoder: inout any TokenStreamDecoder,
+        continuation: AsyncStream<Generation>.Continuation,
+        stopFilter: inout StopStringFilter,
+        stopped: inout Bool
+    ) -> Bool {
+        var didStop = false
+        let completed = decoder.push(token) { event in
+            switch event {
+            case .response(let text):
+                let filtered = stopFilter.process(text)
+                if let response = filtered.text {
+                    _ = continuation.yield(.chunk(response))
+                }
+                if filtered.stopped {
+                    didStop = true
+                }
+            case .reasoning(let text):
+                _ = continuation.yield(.reasoning(text))
+            case .toolCall(let toolCall):
+                _ = continuation.yield(.toolCall(toolCall))
+            case .protocolError, .stop:
+                didStop = true
+            }
+            return !didStop
+        }
+        if didStop { stopped = true }
+        return completed
+    }
+
+    private nonisolated static func finishProtocol(
+        decoder: inout any TokenStreamDecoder,
+        stopped: Bool,
+        continuation: AsyncStream<Generation>.Continuation
+    ) {
+        _ = decoder.finish { event in
+            switch event {
+            case .response(let text):
+                _ = continuation.yield(.chunk(text))
+            case .reasoning(let text):
+                _ = continuation.yield(.reasoning(text))
+            case .toolCall(let toolCall):
+                _ = continuation.yield(.toolCall(toolCall))
+            case .protocolError, .stop:
+                break
+            }
+            return !stopped
+        }
     }
 
     public func cancel(_ id: BatchRequestID) {
