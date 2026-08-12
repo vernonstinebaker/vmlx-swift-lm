@@ -114,6 +114,76 @@ public class NemotronHTests: XCTestCase {
         XCTAssertEqual(config.hybridOverridePattern, "M*M-")
     }
 
+    func testConfigurationDecodingFromLayersBlockType() throws {
+        // Nemotron 3.5 Lightning omits hybrid_override_pattern and provides
+        // layers_block_type as an array of full names instead.
+        let json = """
+            {
+                "model_type": "nemotron_h",
+                "vocab_size": 131072,
+                "hidden_size": 2688,
+                "num_hidden_layers": 52,
+                "num_attention_heads": 32,
+                "num_key_value_heads": 2,
+                "mamba_num_heads": 64,
+                "mamba_head_dim": 64,
+                "ssm_state_size": 128,
+                "conv_kernel": 4,
+                "n_groups": 8,
+                "intermediate_size": 1856,
+                "moe_intermediate_size": 1856,
+                "moe_shared_expert_intermediate_size": 3712,
+                "n_routed_experts": 128,
+                "n_shared_experts": 1,
+                "num_experts_per_tok": 6,
+                "layers_block_type": [
+                    "mamba", "moe", "mamba", "moe", "mamba", "attention",
+                    "moe", "mamba", "moe", "mamba", "attention"
+                ],
+                "layer_norm_epsilon": 1e-5,
+                "n_group": 1,
+                "topk_group": 1,
+                "time_step_min": 0.001,
+                "time_step_max": 0.1,
+                "time_step_floor": 0.0001,
+                "num_nextn_predict_layers": 1,
+                "mtp_layers_block_type": ["attention", "moe"]
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            NemotronHConfiguration.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(config.hybridOverridePattern, "MEMEM*EMEM*")
+        // num_hidden_layers is overridden from the pattern length, matching mlx-lm.
+        XCTAssertEqual(config.numHiddenLayers, config.hybridOverridePattern.count)
+        XCTAssertEqual(config.numHiddenLayers, 11)
+        // time_step_min/max/floor are accepted (ignored) and don't break decoding;
+        // time_step_limit falls back to its default range.
+        XCTAssertEqual(config.timeStepLimitMin, 0.0)
+        XCTAssertEqual(config.timeStepLimitMax, Float.infinity)
+    }
+
+    func testSanitizeDropsMTPWeights() throws {
+        // Lightning checkpoints ship a multi-token-prediction head (mtp.*) that
+        // the causal LM body does not consume; sanitize must drop it.
+        let config = makeTestConfig(pattern: "M*M-E")
+        let model = NemotronHModel(config)
+
+        var weights: [String: MLXArray] = [
+            "backbone.embeddings.weight": MLXArray.zeros([100, 64]),
+            "backbone.norm_f.weight": MLXArray.ones([64]),
+            "mtp.layers.0.norm.weight": MLXArray.ones([64]),
+            "mtp.embed": MLXArray.zeros([8, 64]),
+        ]
+
+        weights = model.sanitize(weights: weights)
+
+        XCTAssertNotNil(weights["backbone.embeddings.weight"])
+        XCTAssertNil(weights["mtp.layers.0.norm.weight"])
+        XCTAssertNil(weights["mtp.embed"])
+    }
+
     func testConfigurationDecodingWithTimeStepLimitArray() throws {
         // time_step_limit can be an array [min, max]
         let json = """
