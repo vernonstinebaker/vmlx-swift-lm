@@ -305,13 +305,15 @@ public actor BatchEngine {
         do {
             firstToken = try MLXExecutionCoordinator.withLock {
                 let prepared = try context.model.prepare(
-                    slot.input, cache: slot.cache, state: nil, prefill: .init())
+                    slot.input, cache: slot.cache, state: slot.state, prefill: .init())
                 let logits: MLXArray
                 switch prepared {
                 case let .tokens(text):
-                    logits = context.model(text[text: .newAxis], cache: slot.cache, state: nil)
-                        .logits[0 ..< 1, -1, 0...]
+                    let output = context.model(text[text: .newAxis], cache: slot.cache, state: slot.state)
+                    slot.state = output.state
+                    logits = output.logits[0 ..< 1, -1, 0...]
                 case let .logits(output):
+                    slot.state = output.state
                     logits = output.logits[0 ..< 1, -1, 0...]
                 }
                 MLX.eval(slot.cache)
@@ -337,6 +339,12 @@ public actor BatchEngine {
     }
 
     private func decode(_ indices: [Int]) {
+        if indices.contains(where: { activeSlots[$0].state != nil }) {
+            for index in indices {
+                decodeStateful(index)
+            }
+            return
+        }
         if indices.count == 1, let forward = activeSlots[indices[0]].compiledForward {
             decodeCompiled(indices[0], forward: forward)
             return
@@ -381,6 +389,22 @@ public actor BatchEngine {
         }
     }
 
+    private func decodeStateful(_ index: Int) {
+        var slot = activeSlots[index]
+        guard let nextToken = slot.nextToken else { return }
+        let logits = MLXExecutionCoordinator.withLock {
+            let output = context.model(
+                LMInput.Text(tokens: nextToken.reshaped(1, 1)),
+                cache: slot.cache,
+                state: slot.state)
+            slot.state = output.state
+            MLX.eval(output.logits)
+            return output.logits[0 ..< 1, 0, 0...]
+        }
+        emit(slot.sample(logits), to: &slot)
+        activeSlots[index] = slot
+    }
+
     private func decodeCompiled(
         _ index: Int,
         forward: @Sendable ([MLXArray]) -> [MLXArray]
@@ -399,6 +423,7 @@ public actor BatchEngine {
 
     private func promoteToCompiledDecode(_ slot: inout BatchSlot) {
         guard maxBatchSize == 1,
+              slot.state == nil,
               slot.parameters.enableCompiledBatchDecode,
               slot.parameters.compiledBatchBuckets.contains(1),
               slot.cache.allSatisfy({ $0 is KVCacheSimple })

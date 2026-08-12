@@ -37,6 +37,7 @@ struct BatchSlot {
     let sampler: LogitSampler
     var processor: LogitProcessor?
     var cache: [KVCache]
+    var state: LMOutput.State?
     let parameters: GenerateParameters
     var compiledForward: (@Sendable ([MLXArray]) -> [MLXArray])?
     let maxTokens: Int?
@@ -55,6 +56,7 @@ struct BatchSlot {
         sampler = request.parameters.sampler()
         processor = request.parameters.processor()
         self.cache = cache
+        state = nil
         parameters = request.parameters
         compiledForward = nil
         maxTokens = request.parameters.maxTokens
