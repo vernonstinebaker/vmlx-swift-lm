@@ -62,7 +62,7 @@ public enum SpecDecRuntimeDDTree {
             return .init(tokenIDs: [])
         }
 
-        let cache = args.target.newCache(parameters: nil)
+        let cache = try args.target.newCache(parameters: nil)
         let prefill = args.target(args.inputIDs, cache: cache, captureLayerIDs: [])
         let rootPrediction = argMax(
             prefill.logits[0, prefill.logits.dim(1) - 1, 0...], axis: -1

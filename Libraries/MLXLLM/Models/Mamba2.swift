@@ -275,7 +275,7 @@ public class Mamba2Model: Module, LLMModel {
         return backbone.embeddings.asLinear(hidden)
     }
 
-    public func newCache(parameters: GenerateParameters?) -> [KVCache] {
+    public func newCache(parameters: GenerateParameters?) throws -> [KVCache] {
         (0 ..< config.numHiddenLayers).map { _ in MambaCache() }
     }
 

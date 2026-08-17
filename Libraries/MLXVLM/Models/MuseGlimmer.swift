@@ -1074,7 +1074,7 @@ public class MuseGlimmer: Module, VLMModel, KVCacheDimensionProvider {
         super.init()
     }
 
-    public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
+    public func newCache(parameters: GenerateParameters?) throws -> [any KVCache] {
         languageModel.newCache(parameters: parameters)
     }
 
