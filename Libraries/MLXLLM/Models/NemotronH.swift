@@ -739,15 +739,15 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
         return out
     }
 
-    public func newCache(parameters: GenerateParameters?) -> [KVCache] {
+    public func newCache(parameters: GenerateParameters?) throws -> [KVCache] {
         let pattern = Array(configuration.hybridOverridePattern)
-        return pattern.compactMap { char -> KVCache? in
+        return try pattern.compactMap { char -> KVCache? in
             let blockType = NemotronHBlockType(from: char)
             switch blockType {
             case .mamba:
                 return MambaCache()
             case .attention:
-                return KVCacheSimple()
+                return try makeAttentionKVCache(parameters: parameters)
             case .mlp, .moe:
                 return nil  // No cache needed for MLP/MoE layers
             }
@@ -760,7 +760,9 @@ public class NemotronHModel: Module, LLMModel, KVCacheDimensionProvider, LoRAMod
         let filtered = weights.filter { !($0.key.hasPrefix("mtp.") || $0.key == "mtp" ) }
         var sanitized = [String: MLXArray]()
 
-        for (key, value) in filtered {
+        for (key, value) in filterLMHeadWeights(
+            from: filtered, tiedWordEmbeddings: configuration.tieWordEmbeddings)
+        {
             var finalValue = value
 
             // Handle conv1d weight axis swap

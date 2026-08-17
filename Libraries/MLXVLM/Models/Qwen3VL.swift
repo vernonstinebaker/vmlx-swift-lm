@@ -146,7 +146,9 @@ public struct Qwen3VLProcessor: UserInputProcessor {
             for video in input.videos {
                 var resizedSize: CGSize = .zero
                 let sequence = try await MediaProcessing.asProcessedSequence(
-                    video, targetFPS: { _ in Double(2) }
+                    video,
+                    processing: input.processing.video,
+                    targetFPS: { _ in Double(2) }
                 ) { frame in
                     let processed = MediaProcessing.apply(
                         try frame.image.asCIImage(), processing: input.processing)
@@ -2037,5 +2039,7 @@ public struct Qwen3VLMessageGenerator: MessageGenerator {
 // MARK: - Chat conventions
 
 extension Qwen3VL {
-    public var reasoningConfig: ReasoningConfig? { .thinkTagsWithEnableThinking }
+    // Qwen3-VL shares Qwen's tags and tool-call boundary, but does not declare
+    // the original Qwen3 family's model-specific hard-budget transition.
+    public var reasoningConfig: ReasoningConfig? { QwenReasoningProtocol.tagged }
 }

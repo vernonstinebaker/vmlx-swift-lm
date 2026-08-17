@@ -235,9 +235,8 @@ public class Qwen3Model: Module, LLMModel, KVCacheDimensionProvider, HiddenState
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = weights
 
-        if configuration.tieWordEmbeddings {
-            weights["lm_head.weight"] = nil
-        }
+        weights = filterLMHeadWeights(
+            from: weights, tiedWordEmbeddings: configuration.tieWordEmbeddings)
 
         return weights
     }
@@ -323,5 +322,5 @@ extension Qwen3Model: LoRAModel {
 // MARK: - Chat conventions
 
 extension Qwen3Model {
-    public var reasoningConfig: ReasoningConfig? { .thinkTagsWithEnableThinking }
+    public var reasoningConfig: ReasoningConfig? { QwenReasoningProtocol.qwen3 }
 }

@@ -442,6 +442,8 @@ public enum ChatSessionTests {
                 break
             case .toolCall(let toolCall):
                 toolCalls.append(toolCall)
+            case .rejectedToolCall(let rejection):
+                throw RejectedToolCallError(rejection)
             case .info(let completionInfo):
                 info = completionInfo
             }
@@ -524,6 +526,8 @@ public enum ChatSessionTests {
                 break
             case .toolCall(let call):
                 followUpCalls.append(call)
+            case .rejectedToolCall(let rejection):
+                throw RejectedToolCallError(rejection)
             case .info(let info):
                 completion = info
             }
@@ -983,8 +987,8 @@ public enum ToolCallTests {
     public static func qwen35FormatAutoDetection(container: LLModelContainer) async throws {
         let config = await container.configuration
         try check(
-            config.toolCallFormat == ToolCallFormat.xmlFunction,
-            "Expected .xmlFunction tool call format, got: \(String(describing: config.toolCallFormat))"
+            config.toolCallFormat == ToolCallFormat.qwen35,
+            "Expected .qwen35 tool call format, got: \(String(describing: config.toolCallFormat))"
         )
     }
 
@@ -1080,6 +1084,8 @@ public enum ToolCallTests {
                     break
                 case .toolCall(let toolCall):
                     toolCalls.append(toolCall)
+                case .rejectedToolCall(let rejection):
+                    throw RejectedToolCallError(rejection)
                 case .info:
                     break
                 }
