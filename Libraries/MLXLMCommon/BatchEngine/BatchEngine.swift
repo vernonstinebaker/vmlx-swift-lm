@@ -184,6 +184,8 @@ public actor BatchEngine {
                 _ = continuation.yield(.reasoning(text))
             case .toolCall(let toolCall):
                 _ = continuation.yield(.toolCall(toolCall))
+            case .rejectedToolCall(let rejection):
+                _ = continuation.yield(.rejectedToolCall(rejection))
             case .protocolError, .stop:
                 didStop = true
             }
@@ -206,6 +208,8 @@ public actor BatchEngine {
                 _ = continuation.yield(.reasoning(text))
             case .toolCall(let toolCall):
                 _ = continuation.yield(.toolCall(toolCall))
+            case .rejectedToolCall(let rejection):
+                _ = continuation.yield(.rejectedToolCall(rejection))
             case .protocolError, .stop:
                 break
             }
@@ -275,10 +279,14 @@ public actor BatchEngine {
             {
                 parameters.maxKVSize = defaultMaxKVSize
             }
-            let cache = MLXExecutionCoordinator.withLock {
-                context.model.newCache(parameters: parameters)
+            do {
+                let cache = try MLXExecutionCoordinator.withLock {
+                    try context.model.newCache(parameters: parameters)
+                }
+                activeSlots.append(BatchSlot(request: request, cache: cache))
+            } catch {
+                finish(request, reason: .cancelled)
             }
-            activeSlots.append(BatchSlot(request: request, cache: cache))
         }
     }
 
