@@ -2702,6 +2702,7 @@ public enum Generation: Sendable {
     public var rejectedToolCall: RejectedToolCall? {
         switch self {
         case .chunk: nil
+        case .reasoning: nil
         case .info: nil
         case .toolCall: nil
         case .rejectedToolCall(let rejection): rejection
@@ -2879,12 +2880,6 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
         emit: (sending Generation) -> AsyncStream<Generation>.Continuation.YieldResult
     ) -> TokenLoopDisposition {
         switch event {
-        case .reasoning:
-            // The public Generation stream intentionally exposes only response
-            // text and tool calls. Protocol-aware clients consume reasoning via
-            // the package-level TokenStreamDecoder contract.
-            return .more
-
         case .response(let response):
             if case .terminated = emit(.chunk(response)) {
                 return .cancelled
