@@ -348,6 +348,9 @@ public actor BatchEngine {
 
     private func decode(_ indices: [Int]) {
         if indices.contains(where: { activeSlots[$0].state != nil }) {
+            if indices.count > 1, decodePackedStateful(indices) {
+                return
+            }
             for index in indices {
                 decodeStateful(index)
             }
@@ -357,7 +360,25 @@ public actor BatchEngine {
             decodeCompiled(indices[0], forward: forward)
             return
         }
+        decodePacked(indices, state: nil)
+    }
 
+    /// One `[B, 1]` forward for VLM/continuation slots that keep `LMOutput.State`
+    /// (Qwen 3.5/3.8 M-RoPE). Sequential `decodeStateful` is only the fallback when
+    /// those arrays cannot be stacked on the batch axis.
+    @discardableResult
+    private func decodePackedStateful(_ indices: [Int]) -> Bool {
+        let states = indices.compactMap { activeSlots[$0].state }
+        guard states.count == indices.count,
+            let batchedState = LMOutput.State.stackedAlongBatch(states)
+        else {
+            return false
+        }
+        decodePacked(indices, state: batchedState)
+        return true
+    }
+
+    private func decodePacked(_ indices: [Int], state: LMOutput.State?) {
         let tokens = stacked(indices.compactMap { activeSlots[$0].nextToken }).reshaped(indices.count, 1)
         let layerCount = activeSlots[indices[0]].cache.count
         var arraysCaches: [BatchArraysCache] = []
@@ -383,16 +404,22 @@ public actor BatchEngine {
             caches.append(BatchKVCache(slotCaches: slotCaches))
         }
         nonisolated(unsafe) let forwardCaches = caches
-        let logits = MLXExecutionCoordinator.withLock {
-            let output = context.model(LMInput.Text(tokens: tokens), cache: forwardCaches, state: nil).logits
-            MLX.eval(output)
-            return output
+        nonisolated(unsafe) let forwardState = state
+        let output = MLXExecutionCoordinator.withLock {
+            let generated = context.model(
+                LMInput.Text(tokens: tokens), cache: forwardCaches, state: forwardState)
+            MLX.eval(generated.logits)
+            return generated
         }
         arraysCaches.forEach { $0.splitBack() }
         cacheLists.forEach { $0.splitBack() }
+        let splitState = output.state?.splitAlongBatch(count: indices.count)
         for (batchIndex, slotIndex) in indices.enumerated() {
             var slot = activeSlots[slotIndex]
-            emit(slot.sample(logits[batchIndex ..< batchIndex + 1, 0, 0...]), to: &slot)
+            if let splitState {
+                slot.state = splitState[batchIndex]
+            }
+            emit(slot.sample(output.logits[batchIndex ..< batchIndex + 1, 0, 0...]), to: &slot)
             activeSlots[slotIndex] = slot
         }
     }

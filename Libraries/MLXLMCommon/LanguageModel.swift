@@ -242,6 +242,56 @@ public struct LMOutput {
             return arrays
         }
 
+        /// Stack per-slot continuation arrays whose leading dimension is the
+        /// sequence/batch axis (`[]` or `[1, …]`). Keys that are not `MLXArray`
+        /// or use a different layout (for example M-RoPE ids `[3, 1, S]`) are
+        /// omitted so decode can recompute them from `ropeDeltas`.
+        static func stackedAlongBatch(_ states: [State]) -> State? {
+            guard let first = states.first else { return nil }
+            if states.count == 1 { return first }
+            let aligned = states.compactMap { $0.batchLeadingArrays() }
+            guard aligned.count == states.count else { return nil }
+            let keys = Set(aligned[0].keys).intersection(Set(aligned.dropFirst().flatMap { $0.keys }))
+            guard !keys.isEmpty else { return nil }
+            var stacked: [String: MLXArray] = [:]
+            stacked.reserveCapacity(keys.count)
+            for key in keys {
+                let pieces = aligned.compactMap { $0[key] }
+                guard pieces.count == states.count else { return nil }
+                stacked[key] = concatenated(pieces, axis: 0)
+            }
+            return State(serializedArrays: stacked)
+        }
+
+        func splitAlongBatch(count: Int) -> [State]? {
+            guard count > 0 else { return nil }
+            if count == 1 { return [self] }
+            guard let arrays = batchLeadingArrays(), !arrays.isEmpty else { return nil }
+            var split = Array(repeating: State(), count: count)
+            for (key, value) in arrays {
+                guard value.dim(0) == count else { return nil }
+                for index in 0 ..< count {
+                    var next = split[index]
+                    next.contents[key] = value[index ..< index + 1]
+                    split[index] = next
+                }
+            }
+            return split
+        }
+
+        private func batchLeadingArrays() -> [String: MLXArray]? {
+            var arrays: [String: MLXArray] = [:]
+            for (key, value) in contents {
+                guard let array = value as? MLXArray else { continue }
+                if array.ndim == 0 {
+                    arrays[key] = array.reshaped([1])
+                } else if array.dim(0) == 1 {
+                    arrays[key] = array
+                }
+            }
+            return arrays.isEmpty ? nil : arrays
+        }
+
         public subscript<T>(_ key: Key<T>) -> T? {
             get {
                 contents[key.id] as? T
