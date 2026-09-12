@@ -112,7 +112,7 @@ private enum Language {
             var freqs = matmul(invFreqExpanded, posExpanded)  // [3, batch, dim/2, seq]
             freqs = freqs.transposed(0, 1, 3, 2)  // [3, batch, seq, dim/2]
 
-            var freqsT = freqs[0]
+            let freqsT = freqs[0]
             var offset = mropeSectionRaw[0]
             for dim in 1 ..< mropeSectionRaw.count {
                 let length = mropeSectionRaw[dim]
@@ -325,6 +325,25 @@ private enum Language {
 }
 
 // MARK: - Vision
+
+/// Cumulative patch-row boundaries, one per temporal slice, used to build the
+/// block-diagonal vision attention mask.
+///
+/// Each frame contributes `t` blocks of `h * w` rows, so the boundaries must be a
+/// running total across every slice of every frame. Internal rather than nested in
+/// `Vision` so that `t > 1` (video) grids can be covered directly by tests.
+func visionCuSeqlens(_ frames: [THW]) -> [Int] {
+    var cuSeqlens = [0]
+    for frame in frames {
+        let seqLen = frame.h * frame.w
+        var running = cuSeqlens.last!
+        for _ in 0 ..< frame.t {
+            running += seqLen
+            cuSeqlens.append(running)
+        }
+    }
+    return cuSeqlens
+}
 
 private enum Vision {
 
@@ -664,15 +683,7 @@ private enum Vision {
 
             // prepare attention masks
             let seqLen = hiddenStates.dim(0)
-            var cuSeqlens = [0]
-            for frame in frames {
-                let seqLen = frame.h * frame.w
-                cuSeqlens.append(
-                    contentsOf: Array(repeating: seqLen, count: frame.t).map {
-                        cuSeqlens.last! + $0
-                    })
-            }
-            let cuSeqlensArray = MLXArray(cuSeqlens)
+            let cuSeqlensArray = MLXArray(visionCuSeqlens(frames))
 
             let fullAttentionMaskBool = attentionMask(
                 sequenceLength: seqLen, cuSeqlens: cuSeqlensArray)
