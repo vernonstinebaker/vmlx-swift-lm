@@ -212,7 +212,10 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
                 stopTokenIDs: stopTokenIDs
             ))
             else { return [] }
-            return Array(result.tokenIds.dropFirst(inputIDs.count))
+            let pending = Array(result.tokenIds.dropFirst(inputIDs.count))
+            FileHandle.standardError.write(Data(
+                "[dflash2-probe][iterator] inputCount=\(inputIDs.count) resultRows=\(result.tokenIds.count) pending=\(pending.count) first8=\(Array(pending.prefix(8)))\n".utf8))
+            return pending
 
         case .none, .autoregressive:
             return []
