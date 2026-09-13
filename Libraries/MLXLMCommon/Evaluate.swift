@@ -2928,12 +2928,19 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
         return disposition
     }
 
+    private var dflash2EventProbe = 0
+
     private mutating func process(
         _ event: TokenStreamEvent,
         emit: (sending Generation) -> AsyncStream<Generation>.Continuation.YieldResult
     ) -> TokenLoopDisposition {
         switch event {
         case .response(let response):
+            if dflash2EventProbe < 4 {
+                FileHandle.standardError.write(Data(
+                    "[dflash2-probe][handler] event\(dflash2EventProbe)=\(response.prefix(40))\n".utf8))
+                dflash2EventProbe += 1
+            }
             if case .terminated = emit(.chunk(response)) {
                 return .cancelled
             }
