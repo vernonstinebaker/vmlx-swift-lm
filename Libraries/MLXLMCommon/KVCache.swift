@@ -561,12 +561,15 @@ public class RotatingKVCache: BaseKVCache, CustomDebugStringConvertible {
         case requested
     }
 
-    private var keep: Int
-    private var keys: MLXArray?
-    private var values: MLXArray?
+    // `internal` (was `private`): the DFlash 2 drafter's sliding-context clip
+    // rewinds the ring cursor and reads the temporal view. Keep edits inside
+    // this module.
+    var keep: Int
+    var keys: MLXArray?
+    var values: MLXArray?
     private var maxCacheSize: Int
     private var step: Int
-    private var idx: Int = 0
+    var idx: Int = 0
 
     /// In ring layout all rows are live, with `idx...` preceding `keep ..< idx`.
     /// At the end of the buffer the ring is already in temporal order. Otherwise,
@@ -634,6 +637,14 @@ public class RotatingKVCache: BaseKVCache, CustomDebugStringConvertible {
         } else {
             return array[.ellipsis, ..<idx, 0...]
         }
+    }
+
+    /// Read-only temporal view for the DFlash 2 drafter attention: a wrapped
+    /// ring's rotation-order rows would misalign position-derived masks, so
+    /// hand back the chronologically ordered K/V instead.
+    func temporallyOrderedKV() -> (keys: MLXArray, values: MLXArray)? {
+        guard let keys, let values else { return nil }
+        return (temporalOrder(keys), temporalOrder(values))
     }
 
     /// The trailing `tail` cache entries in chronological order, without mutating the cache.
