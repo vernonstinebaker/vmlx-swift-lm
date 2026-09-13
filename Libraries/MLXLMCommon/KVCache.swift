@@ -1640,6 +1640,107 @@ public class MambaCache: ArraysCache {
         copyContents(to: new)
         return new
     }
+
+    // MARK: - Recorded prefix commits (capture_commit verifier mode)
+
+    private struct PrefixCommitState {
+        var arrays: [MLXArray]
+        var offset: Int
+    }
+
+    private var prefixCommitStates: [Int: PrefixCommitState] = [:]
+
+    /// Snapshot the recurrent state after the first `length` tokens of a
+    /// verify forward, so a rejected suffix can be committed back to that
+    /// prefix. Arrays are snapshotted (`* 1` + eval) so the checkpoint is
+    /// independent of the next recurrent update.
+    public func recordPrefixCommitState(length: Int, arrays: [MLXArray], offset: Int) {
+        guard length > 0, !arrays.isEmpty else { return }
+        let snapshotArrays = arrays.map { $0 * 1 }
+        MLX.eval(snapshotArrays)
+        prefixCommitStates[length] = PrefixCommitState(
+            arrays: snapshotArrays, offset: offset)
+    }
+
+    public func commitRecordedPrefix(length: Int) -> Bool {
+        guard let snapshot = prefixCommitStates[length] else { return false }
+        let restored = snapshot.arrays.map { $0 * 1 }
+        MLX.eval(restored)
+        state = restored
+        offset = snapshot.offset
+        clearRecordedPrefixes()
+        return true
+    }
+
+    public func clearRecordedPrefixes() {
+        prefixCommitStates.removeAll(keepingCapacity: true)
+    }
+
+    // MARK: - Verify-input stash (DFlash 2 lazy rollback)
+
+    /// Per-layer inputs of the LAST speculative verify forward, stashed by
+    /// the owning recurrent layer so a rejected block can be rolled back
+    /// with ONE replay kernel over the accepted rows. Pure references —
+    /// costs nothing until a rejection happens. `arrays` layout is
+    /// layer-private.
+    public struct VerifyInputStash {
+        public let arrays: [MLXArray]
+        /// Cache offset BEFORE the verify forward advanced it.
+        public let baseOffset: Int
+        /// Recurrent state BEFORE the verify forward, `nil` on a cold start.
+        public let initialState: MLXArray?
+        /// Conv state (`cache[0]`) before the verify forward, if the layer
+        /// carries one.
+        public let initialConvState: MLXArray?
+
+        public init(
+            arrays: [MLXArray], baseOffset: Int,
+            initialState: MLXArray?, initialConvState: MLXArray?
+        ) {
+            self.arrays = arrays
+            self.baseOffset = baseOffset
+            self.initialState = initialState
+            self.initialConvState = initialConvState
+        }
+    }
+
+    public var verifyInputStash: VerifyInputStash?
+
+    public func clearVerifyInputStash() {
+        verifyInputStash = nil
+    }
+
+    // MARK: - Verify staging (compiled DFlash 2 verify)
+
+    /// Fixed staging slots for `input_capture_staged` verify forwards. The
+    /// owning layer updates them IN PLACE (`_updateInternal`) so `compile()`
+    /// tracks them as state outputs; the committed state and offset stay
+    /// untouched until the runtime commits the accepted prefix. Slot layout
+    /// is layer-private. First staged verify must run eagerly so the
+    /// objects exist before the trace.
+    public var verifyStagingSlots: [MLXArray?] = Array(repeating: nil, count: 8)
+
+    public var verifyStagingReady: Bool {
+        !verifyStagingSlots.contains(where: { $0 == nil })
+    }
+
+    public func stageVerifySlot(_ index: Int, _ value: MLXArray) {
+        if let existing = verifyStagingSlots[index], existing.shape == value.shape {
+            existing._updateInternal(value)
+        } else {
+            verifyStagingSlots[index] = value
+        }
+    }
+
+    /// Drop the staging slots so the next staged verify reallocates them.
+    /// Required whenever the verify block length changes.
+    public func clearVerifyStaging() {
+        verifyStagingSlots = Array(repeating: nil, count: verifyStagingSlots.count)
+    }
+
+    public override func innerState() -> [MLXArray] {
+        super.innerState() + verifyStagingSlots.compactMap { $0 }
+    }
 }
 
 /// Composite cache that manages multiple sub-caches
