@@ -151,6 +151,10 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
         guard let token = pending.first else { return nil }
         pending.removeFirst()
         inputIDs.append(token)
+        if tokenCount < 12 {
+            FileHandle.standardError.write(Data(
+                "[dflash2-probe][next] call=\(tokenCount) token=\(token)\n".utf8))
+        }
         tokenCount += 1
         return Int(token)
     }
