@@ -1799,6 +1799,11 @@ public func generate(
             stopTokenIDs: Set(stopTokenIDs.map(Int32.init))
         )
         let stopStrings = context.configuration.effectiveStopStrings.union(parameters.extraStopStrings)
+        // Block diffusion is greedy-lossless: the handler runs WITHOUT the
+        // reasoning collector and prompt-tail priming, which suppress the
+        // leading tokens of the generated stream on templates that auto-open
+        // a reasoning block (Qwen 3.5/3.8). Reasoning-budget requests are
+        // refused before this dispatch.
         let (stream, _) = generateLoopTask(
             promptTokenCount: input.text.tokens.size,
             modelConfiguration: context.configuration,
@@ -1809,12 +1814,7 @@ public func generate(
                 tokenizer: context.tokenizer,
                 stopStrings: stopStrings,
                 format: context.configuration.toolCallFormat ?? .json,
-                tools: tools,
-                reasoningConfig: context.configuration.reasoningConfig,
-                promptTail: context.tokenizer.decode(
-                    tokenIds: Array(input.text.tokens.asArray(Int.self).suffix(64)),
-                    skipSpecialTokens: false
-                )
+                tools: tools
             )
         )
         return stream
