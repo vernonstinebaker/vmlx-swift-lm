@@ -228,6 +228,8 @@ public enum SpecDecRuntimeDFlash2 {
             lastToken = newTokens.last ?? lastToken
         }
 
+        FileHandle.standardError.write(Data(
+            "[dflash2-probe][runtime] promptRows=\(promptRows) resultRows=\(tokenIds.count) first12=\(Array(tokenIds.prefix(promptRows + 12).dropFirst(promptRows)))\n".utf8))
         return DFlash2RuntimeResult(tokenIds: tokenIds)
     }
 
