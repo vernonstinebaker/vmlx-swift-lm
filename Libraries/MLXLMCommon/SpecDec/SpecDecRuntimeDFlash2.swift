@@ -120,7 +120,11 @@ public enum SpecDecRuntimeDFlash2 {
         }
         eval(lastToken, contextHidden)
 
-        var tokenIds: [Int32] = [lastToken]
+        // Linear-runtime contract: the result carries the prompt rows plus
+        // every generated token; the strategy iterator drops the prompt.
+        // (First generated token = the prefill's anchor.)
+        var tokenIds = args.inputIds.asArray(Int32.self)
+        tokenIds.append(lastToken)
         var emitted = 1
 
         while emitted < args.maxNewTokens {
