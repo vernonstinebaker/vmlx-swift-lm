@@ -1780,6 +1780,8 @@ public func generate(
     wiredMemoryTicket: WiredMemoryTicket? = nil,
     tools: [[String: any Sendable]]? = nil
 ) throws -> AsyncStream<Generation> {
+    FileHandle.standardError.write(
+        Data("[dflash2-probe][vMLX] strategy=\(parameters.draftStrategy?.kindName ?? "nil") reprefill=\(try SpecDecStrategyCachePolicy.usesFullReprefill(cache: cache, parameters: parameters))\n".utf8))
     if parameters.draftStrategy?.usesBlockDiffusion == true,
         try SpecDecStrategyCachePolicy.usesFullReprefill(cache: cache, parameters: parameters)
     {

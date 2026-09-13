@@ -31,8 +31,15 @@ package enum SpecDecStrategyCachePolicy {
         cache: [KVCache]?,
         parameters: GenerateParameters
     ) throws -> Bool {
-        guard cache == nil else { return false }
-        return try parameters.kvCachePlan().configuration == nil
+        guard cache == nil else {
+            FileHandle.standardError.write(Data("[dflash2-probe][vMLX] reprefill=false (cache non-nil)\n".utf8))
+            return false
+        }
+        let plan = try parameters.kvCachePlan()
+        let reprefill = plan.configuration == nil
+        FileHandle.standardError.write(
+            Data("[dflash2-probe][vMLX] reprefill=\(reprefill) config=\(String(describing: plan.configuration))\n".utf8))
+        return reprefill
     }
 }
 
