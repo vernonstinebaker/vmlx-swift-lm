@@ -1780,8 +1780,6 @@ public func generate(
     wiredMemoryTicket: WiredMemoryTicket? = nil,
     tools: [[String: any Sendable]]? = nil
 ) throws -> AsyncStream<Generation> {
-    FileHandle.standardError.write(
-        Data("[dflash2-probe][vMLX] strategy=\(parameters.draftStrategy?.kindName ?? "nil") reprefill=\(try SpecDecStrategyCachePolicy.usesFullReprefill(cache: cache, parameters: parameters))\n".utf8))
     if parameters.draftStrategy?.usesBlockDiffusion == true,
         try SpecDecStrategyCachePolicy.usesFullReprefill(cache: cache, parameters: parameters)
     {
@@ -2928,19 +2926,12 @@ private struct TextToolTokenLoopHandler: TokenLoopHandler {
         return disposition
     }
 
-    private var dflash2EventProbe = 0
-
     private mutating func process(
         _ event: TokenStreamEvent,
         emit: (sending Generation) -> AsyncStream<Generation>.Continuation.YieldResult
     ) -> TokenLoopDisposition {
         switch event {
         case .response(let response):
-            if dflash2EventProbe < 4 {
-                FileHandle.standardError.write(Data(
-                    "[dflash2-probe][handler] event\(dflash2EventProbe)=\(response.prefix(40))\n".utf8))
-                dflash2EventProbe += 1
-            }
             if case .terminated = emit(.chunk(response)) {
                 return .cancelled
             }

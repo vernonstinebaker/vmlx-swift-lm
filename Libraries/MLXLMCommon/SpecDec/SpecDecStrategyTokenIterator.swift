@@ -151,10 +151,6 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
         guard let token = pending.first else { return nil }
         pending.removeFirst()
         inputIDs.append(token)
-        if tokenCount < 12 {
-            FileHandle.standardError.write(Data(
-                "[dflash2-probe][next] call=\(tokenCount) token=\(token)\n".utf8))
-        }
         tokenCount += 1
         return Int(token)
     }
@@ -216,10 +212,7 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
                 stopTokenIDs: stopTokenIDs
             ))
             else { return [] }
-            let pending = Array(result.tokenIds.dropFirst(inputIDs.count))
-            FileHandle.standardError.write(Data(
-                "[dflash2-probe][iterator] inputCount=\(inputIDs.count) resultRows=\(result.tokenIds.count) pending=\(pending.count) first8=\(Array(pending.prefix(8)))\n".utf8))
-            return pending
+            return Array(result.tokenIds.dropFirst(inputIDs.count))
 
         case .none, .autoregressive:
             return []

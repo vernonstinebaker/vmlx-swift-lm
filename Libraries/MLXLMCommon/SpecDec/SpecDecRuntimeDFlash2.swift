@@ -105,19 +105,6 @@ public enum SpecDecRuntimeDFlash2 {
         }
         let lastLogits = prefillLogits[0..., (prefillLogits.dim(1) - 1)..., 0...]
         var lastToken = argMax(lastLogits, axis: -1).item(Int32.self)
-        if ProcessInfo.processInfo.environment["VMLX_DFLASH2_SKIP_CAPTURE"] == "1" {
-            // Diagnostics: prefill WITHOUT hidden-state capture — a different
-            // first token here proves the capturing forward diverges from the
-            // plain forward on this target.
-            let (plainLogits, _) = args.target.callAsFunction(
-                args.inputIds, cache: nil, captureLayerIDs: [],
-                recordPrefixCommitStates: false)
-            let plainToken = argMax(
-                plainLogits[0..., (plainLogits.dim(1) - 1)..., 0...], axis: -1
-            ).item(Int32.self)
-            FileHandle.standardError.write(Data(
-                "[dflash2-probe][prefill] capturedFirst=\(lastToken) noCaptureFirst=\(plainToken)\n".utf8))
-        }
         eval(lastToken, contextHidden)
 
         // Linear-runtime contract: the result carries the prompt rows plus
@@ -245,8 +232,6 @@ public enum SpecDecRuntimeDFlash2 {
             lastToken = newTokens.last ?? lastToken
         }
 
-        FileHandle.standardError.write(Data(
-            "[dflash2-probe][runtime] promptRows=\(promptRows) resultRows=\(tokenIds.count) first12=\(Array(tokenIds.prefix(promptRows + 12).dropFirst(promptRows)))\n".utf8))
         return DFlash2RuntimeResult(tokenIds: tokenIds)
     }
 
