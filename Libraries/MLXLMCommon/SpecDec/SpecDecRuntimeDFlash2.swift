@@ -145,7 +145,8 @@ public enum SpecDecRuntimeDFlash2 {
                 logitsStart: 1)
             guard proposal.tokens.ndim == 2, proposal.tokens.dim(1) == bs - 1 else {
                 return autoregressiveTail(
-                    args, cache: cache, lastToken: lastToken, emitted: emitted)
+                    args, cache: cache, lastToken: lastToken, emitted: emitted,
+                    accumulated: tokenIds)
             }
             asyncEval(proposal.tokens)
 
@@ -236,9 +237,10 @@ public enum SpecDecRuntimeDFlash2 {
         _ args: DFlash2RuntimeArgs,
         cache: [KVCache],
         lastToken: Int32,
-        emitted: Int
+        emitted: Int,
+        accumulated: [Int32]
     ) -> DFlash2RuntimeResult {
-        var tokenIds: [Int32] = []
+        var tokenIds = accumulated
         var last = lastToken
         var count = emitted
         while count < args.maxNewTokens {
