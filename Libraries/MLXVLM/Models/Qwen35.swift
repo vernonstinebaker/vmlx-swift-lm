@@ -684,6 +684,18 @@ public enum Qwen35Language {
                         advancedBy: split)
                 }
             } else {
+                if let cache, mask == nil,
+                    NativeMTPVerifierStatePolicy.shouldStashVerifyInputs
+                {
+                    // DFlash 2 lazy rollback: keep REFERENCES to this scan's
+                    // inputs so a rejection replays just the accepted rows.
+                    // Costs nothing when the block is fully accepted.
+                    cache.verifyInputStash = MambaCache.VerifyInputStash(
+                        arrays: [qNormed, kNormed, v, a, b, mixedQKV],
+                        baseOffset: cache.offset,
+                        initialState: state.map { $0 * 1 },
+                        initialConvState: convState * 1)
+                }
                 (out, state) = gatedDeltaUpdate(
                     q: qNormed,
                     k: kNormed,
@@ -704,6 +716,46 @@ public enum Qwen35Language {
 
             let gated = norm(out, gate: z)
             return outProj(gated.reshaped(B, S, -1))
+        }
+
+        /// DFlash 2 lazy rollback: replay the recurrence over the stashed
+        /// scan inputs for the accepted rows — one `gatedDeltaUpdate` for
+        /// the recurrent state, one conv rebuild over the accepted qkv rows
+        /// — leaving a cache that describes exactly the committed prefix.
+        func commitVerifyStash(cache: MambaCache, acceptedInputs: Int) -> Bool {
+            guard let stash = cache.verifyInputStash else { return false }
+            let n = acceptedInputs
+            let qkv = stash.arrays[5]
+            guard n > 0, n <= qkv.dim(1) else { return false }
+            let (_, newRecState) = gatedDeltaUpdate(
+                q: stash.arrays[0][0..., ..<n, 0..., 0...],
+                k: stash.arrays[1][0..., ..<n, 0..., 0...],
+                v: stash.arrays[2][0..., ..<n, 0..., 0...],
+                a: stash.arrays[3][0..., ..<n, 0...],
+                b: stash.arrays[4][0..., ..<n, 0...],
+                aLog: aLog,
+                dtBias: dtBias,
+                state: stash.initialState,
+                mask: nil,
+                useKernel: !training)
+            cache[1] = newRecState
+            let initialConv =
+                stash.initialConvState
+                ?? MLXArray.zeros(
+                    [qkv.dim(0), max(0, convKernelSize - 1), convDim],
+                    dtype: qkv.dtype)
+            if convKernelSize > 1 {
+                let convInput = concatenated(
+                    [initialConv, qkv[0..., ..<n, 0...]], axis: 1)
+                cache[0] = contiguous(
+                    convInput[0..., (-(convKernelSize - 1))..., 0...])
+            } else {
+                cache[0] = MLXArray.zeros(
+                    [qkv.dim(0), 0, convDim], dtype: qkv.dtype)
+            }
+            cache.offset = stash.baseOffset + n
+            cache.verifyInputStash = nil
+            return true
         }
     }
 
@@ -1124,6 +1176,26 @@ private func qwen35VLMSharedKVOffsets(
 }
 
 // MARK: - Model
+
+// MARK: - DFlash2VerifyRollbackModel (Phase 29 port)
+//
+// Qwen3.5/3.8 hybrids carry non-trimmable GDN layers; this conformance
+// lets the DFlash 2 runtime roll a rejected block back to the accepted
+// prefix. Attention layers are trimmed by the runtime before this runs.
+
+extension Qwen35Language.LanguageModel: DFlash2VerifyRollbackModel {
+    public var supportsCapturingPrefixCommitRecording: Bool { false }
+
+    public func commitVerifiedBlock(cache: [KVCache], acceptedInputs: Int) -> Bool {
+        for (index, layer) in model.layers.enumerated() where layer.isLinear {
+            guard index < cache.count, let mamba = cache[index] as? MambaCache,
+                let gdn = layer.linearAttn,
+                gdn.commitVerifyStash(cache: mamba, acceptedInputs: acceptedInputs)
+            else { return false }
+        }
+        return true
+    }
+}
 
 public class Qwen35: Module, VLMModel, HiddenStateCaptureModel, TokenEmbedderModel {
     @ModuleInfo(key: "vision_tower") private var visionModel: Qwen3VLVision.VisionModel
@@ -1573,4 +1645,16 @@ extension Qwen35 {
 extension Qwen35 {
     public var toolCallFormat: ToolCallFormat? { .qwen35 }
     public var reasoningConfig: ReasoningConfig? { QwenReasoningProtocol.tagged }
+}
+
+// MARK: - DFlash2VerifyRollbackModel (Phase 29 port)
+
+extension Qwen35: DFlash2VerifyRollbackModel {
+    public var supportsCapturingPrefixCommitRecording: Bool {
+        languageModel.supportsCapturingPrefixCommitRecording
+    }
+
+    public func commitVerifiedBlock(cache: [KVCache], acceptedInputs: Int) -> Bool {
+        languageModel.commitVerifiedBlock(cache: cache, acceptedInputs: acceptedInputs)
+    }
 }

@@ -28,7 +28,7 @@ public final class SpecDecDrafterResolver: @unchecked Sendable {
         switch strategy {
         case let .dflash(drafterPath, _), let .ddtree(drafterPath, _, _):
             path = drafterPath.resolvingSymlinksInPath()
-        case .none, .autoregressive:
+        case .dflash2, .none, .autoregressive:
             throw SpecDecStrategyError.unsupportedStrategy(strategy.kindName)
         }
 
@@ -52,4 +52,31 @@ public final class SpecDecDrafterResolver: @unchecked Sendable {
             cache.removeAll()
         }
     }
+}
+
+/// Resolved DFlash 2 drafter — a different model type than DFlash v1
+/// (candidate-path selector + dynamic causal conv), cached separately.
+public struct ResolvedDFlash2Drafter: @unchecked Sendable {
+    public let model: DFlash2DraftModel
+    public let targetLayerIDs: [Int]
+    public let maskTokenID: Int32
+    public let blockSize: Int
+}
+
+extension SpecDecDrafterResolver {
+    /// Process-wide DFlash 2 drafter cache (a 27B drafter is ~3.8 GB).
+    /// Delegates to DFlash2DrafterResolver.shared, which is lock-backed.
+    public func resolveDFlash2(strategy: DraftStrategy) throws -> ResolvedDFlash2Drafter {
+        guard case let .dflash2(drafterPath, _) = strategy else {
+            throw SpecDecStrategyError.unsupportedStrategy(strategy.kindName)
+        }
+        let model = try Self.dflash2Resolver.drafter(at: drafterPath)
+        return ResolvedDFlash2Drafter(
+            model: model,
+            targetLayerIDs: model.config.targetLayerIds,
+            maskTokenID: Int32(model.config.maskTokenId),
+            blockSize: model.config.blockSize)
+    }
+
+    private static let dflash2Resolver = DFlash2DrafterResolver.shared
 }

@@ -43,7 +43,11 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
     public let promptPrefillTime: TimeInterval = 0
 
     private let target: any (HiddenStateCaptureModel & TokenEmbedderModel)
-    private let resolvedDrafter: ResolvedDrafter
+    private let resolvedDrafter: ResolvedDrafter?
+    private let resolvedDFlash2: ResolvedDFlash2Drafter?
+    private let dflash2Target: (any (
+        HiddenStateCaptureModel & TokenEmbedderModel & DFlash2VerifyRollbackModel
+    ))?
     private let strategy: DraftStrategy
     private let stopTokenIDs: Set<Int32>
     private var inputIDs: [Int32]
@@ -75,15 +79,46 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
         }
 
         self.target = target
-        resolvedDrafter = try resolver.resolve(strategy: strategy)
-        let configuredBlockSize = Self.blockSize(of: strategy)
-        let drafterBlockSize = resolvedDrafter.model.config.blockSize
-        guard configuredBlockSize == drafterBlockSize else {
-            throw SpecDecStrategyError.incompatibleBlockSize(
-                strategy: configuredBlockSize, drafter: drafterBlockSize
+        if case .dflash2 = strategy {
+            // DFlash 2 rollback on a hybrid target needs verify-input
+            // stashing; without the conformance the cache cannot be trusted
+            // past the first rejected block.
+            guard target is DFlash2VerifyRollbackModel else {
+                throw DFlash2RuntimeError.targetLacksPrefixCommitRecording
+            }
+            let resolved = try resolver.resolveDFlash2(strategy: strategy)
+            resolvedDFlash2 = resolved
+            resolvedDrafter = nil
+            dflash2Target = target as? any (
+                HiddenStateCaptureModel & TokenEmbedderModel & DFlash2VerifyRollbackModel
             )
+            let configuredBlockSize = Self.blockSize(of: strategy)
+            guard configuredBlockSize == resolved.blockSize else {
+                throw SpecDecStrategyError.incompatibleBlockSize(
+                    strategy: configuredBlockSize, drafter: resolved.blockSize
+                )
+            }
+        } else {
+            resolvedDFlash2 = nil
+            dflash2Target = nil
+            let resolved = try resolver.resolve(strategy: strategy)
+            resolvedDrafter = resolved
+            let configuredBlockSize = Self.blockSize(of: strategy)
+            guard configuredBlockSize == resolved.model.config.blockSize else {
+                throw SpecDecStrategyError.incompatibleBlockSize(
+                    strategy: configuredBlockSize,
+                    drafter: resolved.model.config.blockSize
+                )
+            }
         }
-        let targetBlockIDs = resolvedDrafter.targetBlockIDs
+        let targetBlockIDs: [Int]
+        if let dflash2 = resolvedDFlash2 {
+            targetBlockIDs = dflash2.targetLayerIDs
+        } else {
+            // .dflash/.ddtree always resolve a v1 drafter; empty triggers the
+            // invalidTargetLayerIDs guard below.
+            targetBlockIDs = resolvedDrafter?.targetBlockIDs ?? []
+        }
         guard
             !targetBlockIDs.isEmpty,
             targetBlockIDs.allSatisfy({ $0 >= 0 }),
@@ -128,11 +163,12 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
 
         switch strategy {
         case .dflash:
+            guard let resolved = resolvedDrafter else { return [] }
             let result = SpecDecRuntimeLinear.run(.init(
                 target: target,
-                drafter: resolvedDrafter.model,
-                targetBlockIDs: resolvedDrafter.targetBlockIDs,
-                maskTokenID: resolvedDrafter.maskTokenID,
+                drafter: resolved.model,
+                targetBlockIDs: resolved.targetBlockIDs,
+                maskTokenID: resolved.maskTokenID,
                 inputIds: input,
                 maxNewTokens: remainingTokens,
                 stopTokenIDs: stopTokenIDs,
@@ -141,11 +177,12 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
             return Array(result.tokenIds.dropFirst(inputIDs.count))
 
         case let .ddtree(_, branchingBudget, _):
+            guard let resolved = resolvedDrafter else { return [] }
             let result = try? SpecDecRuntimeDDTree.run(.init(
                 target: target,
-                drafter: resolvedDrafter.model,
-                targetBlockIDs: resolvedDrafter.targetBlockIDs,
-                maskTokenID: resolvedDrafter.maskTokenID,
+                drafter: resolved.model,
+                targetBlockIDs: resolved.targetBlockIDs,
+                maskTokenID: resolved.maskTokenID,
                 inputIDs: input,
                 maxNewTokens: remainingTokens,
                 stopTokenIDs: stopTokenIDs,
@@ -153,6 +190,22 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
                 blockSize: blockSize
             ))
             return result?.tokenIDs ?? []
+
+        case .dflash2:
+            guard let resolved = resolvedDFlash2, let dflash2Target else { return [] }
+            // A runtime failure here (commit cannot be trusted, refuse
+            // paths) ends the turn without emitting fabricated tokens.
+            guard let result = try? SpecDecRuntimeDFlash2.run(.init(
+                target: dflash2Target,
+                drafter: resolved.model,
+                targetLayerIDs: resolved.targetLayerIDs,
+                maskTokenID: resolved.maskTokenID,
+                inputIds: input,
+                maxNewTokens: remainingTokens,
+                stopTokenIDs: stopTokenIDs
+            ))
+            else { return [] }
+            return Array(result.tokenIds.dropFirst(inputIDs.count))
 
         case .none, .autoregressive:
             return []
@@ -165,7 +218,9 @@ public struct SpecDecStrategyTokenIterator: TokenIteratorProtocol {
 
     private static func blockSize(of strategy: DraftStrategy) -> Int {
         switch strategy {
-        case let .dflash(_, blockSize), let .ddtree(_, _, blockSize): blockSize
+        case let .dflash(_, blockSize), let .ddtree(_, _, blockSize),
+            let .dflash2(_, blockSize):
+            blockSize
         case .none, .autoregressive: 0
         }
     }
