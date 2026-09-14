@@ -752,7 +752,7 @@ public struct TokenIterator: TokenIteratorProtocol {
 
     /// The live cache after the run — a session-owning caller passes this
     /// back into the next turn to skip re-prefilling the shared prefix.
-    public var cache: [KVCache] { cacheStorage.cache }
+    public var liveCache: [KVCache] { cacheStorage.cache }
 
     /// The full rendered token sequence the cache currently represents
     /// (prompt + generated).
