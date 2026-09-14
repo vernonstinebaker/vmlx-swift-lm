@@ -71,9 +71,16 @@ public actor BatchEngine {
     ) -> AsyncStream<Generation> {
         if parameters.draftStrategy?.usesBlockDiffusion == true {
             do {
+                // Block diffusion runs under the fresh-cache reprefill
+                // contract: a typed KV configuration makes usesFullReprefill
+                // return false and silently downgrades the turn to plain
+                // decode. Shed it here; spec-dec owns the cache for the turn.
+                var specParams = parameters
+                specParams.kvCache = nil
+                specParams.maxKVSize = nil
                 return try MLXLMCommon.generate(
                     input: input,
-                    parameters: parameters,
+                    parameters: specParams,
                     context: context
                 )
             } catch {
