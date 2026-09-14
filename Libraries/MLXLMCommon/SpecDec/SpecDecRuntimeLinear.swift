@@ -49,6 +49,7 @@ public enum SpecDecRuntimeLinear {
 
         var (context, bonus) = initialState(args, layers: layers)
         tokenIDs.append(bonus)
+        FileHandle.standardError.write(Data("[v1-probe] initialState done ctxRows=\(context.dim(1)) bonus=\(bonus)\n".utf8))
 
         while tokenIDs.count < limit {
             if args.stopTokenIDs.contains(bonus) {
@@ -56,6 +57,7 @@ public enum SpecDecRuntimeLinear {
             }
 
             let block = draftBlock(args, context: context, bonus: bonus, tokenCount: tokenIDs.count)
+            FileHandle.standardError.write(Data("[v1-probe] block built rows=\(block.count)\n".utf8))
 
             let prefix = Array(tokenIDs.dropLast())
             let verificationIDs = prefix + block
@@ -64,6 +66,7 @@ public enum SpecDecRuntimeLinear {
                 cache: nil,
                 captureLayerIDs: layers
             )
+            FileHandle.standardError.write(Data("[v1-probe] verify done rows=\(verificationIDs.count)\n".utf8))
             MLX.eval(verification.logits)
             let blockStart = verificationIDs.count - blockSize
             let posterior = argMax(
