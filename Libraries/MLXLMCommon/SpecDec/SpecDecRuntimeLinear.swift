@@ -75,16 +75,14 @@ public enum SpecDecRuntimeLinear {
 
             var accepted = 0
             while accepted < blockSize - 1 {
-                FileHandle.standardError.write(Data(
-                    "[v1-probe] accepted=\(accepted) block[\(accepted+1)]=\(block[accepted+1])\n".utf8))
-                guard block[accepted + 1] == posterior[accepted].item(Int32.self) else { break }
+                guard block[accepted + 1] == posterior[0, accepted].item(Int32.self) else { break }
                 accepted += 1
             }
             acceptedLengths.append(accepted)
             if accepted > 0 {
                 tokenIDs.append(contentsOf: block[1 ... accepted])
             }
-            bonus = posterior[accepted].item(Int32.self)
+            bonus = posterior[0, accepted].item(Int32.self)
             tokenIDs.append(bonus)
 
             context = contextFeature(
