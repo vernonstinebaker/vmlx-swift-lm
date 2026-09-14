@@ -80,3 +80,11 @@ yourself — I cannot post for you.
 - `scripts/verify-docs.sh` runs the DocC check that CI runs for every library
   target.
 - See [CONTRIBUTING.md](CONTRIBUTING.md) for integration tests.
+
+## Skills
+
+Apple-published agent skills are installed in `~/.agents/skills/` (exported from Xcode 27 with `xcrun agent skills export`) and are auto-discovered by OpenCode. Load the relevant skill before working in its area — do not rely on training memory for these topics.
+
+- **`modernize-tests`** — Modernize tests — migrate XCTest to Swift Testing and adopt current patterns (`@Suite`, `@Test`, `#expect`).
+- **`adopt-c-bounds-safety`** — C `-fbounds-safety` — `__counted_by`/`__sized_by`/`__single` annotations, build settings and modes, runtime debugging of bounds violations.
+

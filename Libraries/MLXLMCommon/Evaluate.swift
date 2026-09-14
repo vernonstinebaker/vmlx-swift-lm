@@ -750,6 +750,14 @@ public struct TokenIterator: TokenIteratorProtocol {
     public var tokenCount = 0
     public let maxTokens: Int?
 
+    /// The live cache after the run — a session-owning caller passes this
+    /// back into the next turn to skip re-prefilling the shared prefix.
+    public var cache: [KVCache] { cacheStorage.cache }
+
+    /// The full rendered token sequence the cache currently represents
+    /// (prompt + generated).
+    public var renderedTokenIds: [Int32] { y.tokens.asArray(Int32.self) }
+
     var kvCachePlan: KVCachePlan { cacheStorage.plan }
 
     // Internal metrics
