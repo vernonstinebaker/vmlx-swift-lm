@@ -70,9 +70,14 @@ public enum SpecDecRuntimeLinear {
                 verification.logits[0..., blockStart..., 0...], axis: -1
             ).asType(.int32)
             MLX.eval(posterior)
+            FileHandle.standardError.write(Data(
+                "[v1-probe] logitsShape=\(verification.logits.shape) posteriorShape=\(posterior.shape) blockStart=\(blockStart)\n".utf8))
 
             var accepted = 0
-            while accepted < blockSize - 1, block[accepted + 1] == posterior[accepted].item(Int32.self) {
+            while accepted < blockSize - 1 {
+                FileHandle.standardError.write(Data(
+                    "[v1-probe] accepted=\(accepted) block[\(accepted+1)]=\(block[accepted+1])\n".utf8))
+                guard block[accepted + 1] == posterior[accepted].item(Int32.self) else { break }
                 accepted += 1
             }
             acceptedLengths.append(accepted)
