@@ -114,6 +114,35 @@ public class NemotronHTests: XCTestCase {
         XCTAssertEqual(config.hybridOverridePattern, "M*M-")
     }
 
+    func testConfigurationDecodingWithNamedLayerBlockTypes() throws {
+        let json = """
+            {
+                "vocab_size": 100,
+                "hidden_size": 64,
+                "num_hidden_layers": 4,
+                "num_attention_heads": 4,
+                "num_key_value_heads": 2,
+                "mamba_num_heads": 4,
+                "mamba_head_dim": 16,
+                "ssm_state_size": 16,
+                "conv_kernel": 4,
+                "n_groups": 2,
+                "intermediate_size": 128,
+                "moe_intermediate_size": 64,
+                "moe_shared_expert_intermediate_size": 64,
+                "n_routed_experts": 4,
+                "num_experts_per_tok": 2,
+                "layers_block_type": ["mamba", "attention", "moe", "mlp"]
+            }
+            """
+
+        let config = try JSONDecoder().decode(
+            NemotronHConfiguration.self, from: json.data(using: .utf8)!)
+
+        XCTAssertEqual(config.hybridOverridePattern, "M*E-")
+        XCTAssertEqual(config.numHiddenLayers, 4)
+    }
+
     func testConfigurationDecodingWithTimeStepLimitArray() throws {
         // Canonical mlx-lm form: `time_step_limit: [min, max]` (single key holding
         // the pair). The test was originally authored against an early decoder

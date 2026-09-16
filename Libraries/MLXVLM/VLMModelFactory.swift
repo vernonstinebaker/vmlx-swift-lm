@@ -121,6 +121,8 @@ public enum VLMTypeRegistry {
         "lfm2-vl": create(LFM2VLConfiguration.self, LFM2VL.init),
         "glm_ocr": create(GlmOcrConfiguration.self, GlmOcr.init),
         "gemma4": create(Gemma4Configuration.self, Gemma4.init),
+        "gemma4_unified": create(Gemma4Configuration.self, Gemma4.init),
+        "muse_glimmer": create(MuseGlimmerConfiguration.self, MuseGlimmer.init),
         "nemotron_h_omni": create(NemotronHOmniConfiguration.self, NemotronHOmni.init),
         "NemotronH_Nano_Omni_Reasoning_V3":
             create(NemotronHOmniConfiguration.self, NemotronHOmni.init),

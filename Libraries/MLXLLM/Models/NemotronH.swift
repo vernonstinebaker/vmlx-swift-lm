@@ -1119,6 +1119,10 @@ public struct NemotronHConfiguration: Codable, Sendable {
         case timeStepLimit = "time_step_limit"
     }
 
+    private enum LayersBlockKey: String, CodingKey {
+        case layersBlockType = "layers_block_type"
+    }
+
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let rawContainer = try decoder.container(keyedBy: RawCodingKeys.self)
@@ -1169,10 +1173,30 @@ public struct NemotronHConfiguration: Codable, Sendable {
             [String].self, forKey: .hybridOverridePattern)
         {
             hybridOverridePattern = patternArray.joined()
+        } else if let blockTypes = try? decoder.container(keyedBy: LayersBlockKey.self)
+            .decode([String].self, forKey: .layersBlockType)
+        {
+            let pattern = blockTypes.map { blockType -> String in
+                switch blockType {
+                case "mamba": "M"
+                case "attention": "*"
+                case "moe": "E"
+                case "mlp": "-"
+                default: ""
+                }
+            }
+            guard !pattern.contains("") else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .layersBlockType,
+                    in: try decoder.container(keyedBy: LayersBlockKey.self),
+                    debugDescription: "layers_block_type contains an unsupported Nemotron H block type")
+            }
+            hybridOverridePattern = pattern.joined()
+            numHiddenLayers = hybridOverridePattern.count
         } else {
             throw DecodingError.dataCorruptedError(
                 forKey: .hybridOverridePattern, in: container,
-                debugDescription: "hybrid_override_pattern must be string or array of strings")
+                debugDescription: "hybrid_override_pattern or layers_block_type must be provided")
         }
 
         // mlx-lm stores Nemotron-H as `time_step_limit: [min, max]`.
