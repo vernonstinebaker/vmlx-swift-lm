@@ -1134,6 +1134,50 @@ struct ToolTests {
         #expect(toolCall.function.arguments["location"] == .string("Tokyo"))
     }
 
+    @Test("Qwen3.8 XML shell call for an undeclared tool surfaces as an explicit rejection")
+    func testQwen38ShellCallSurfacesThroughProcessor() throws {
+        // Regression: a Qwen3.8 <tool_call> block for an undeclared function
+        // (LLMChat observed `bash`) must surface to the caller as an explicit
+        // rejection with reason .undeclaredTool so the payload is never
+        // silently lost into message content. Upstream #548 moved name
+        // authorization into the rejection channel; this pins that contract
+        // for the exact observed emission.
+        let processor = ToolCallProcessor(
+            format: .xmlFunction,
+            tools: [
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "read_file",
+                        "parameters": ["type": "object"],
+                    ] as [String: any Sendable],
+                ]
+            ])
+        let content = """
+            <tool_call>
+            <function=bash>
+            <parameter=command>
+            ls -h /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results && file /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results/* | head -n 100
+            </parameter>
+            </function>
+            </tool_call>
+            """
+
+        let outputs = processor.processChunkOutputs(content)
+
+        let rejection = outputs.compactMap { output -> RejectedToolCall? in
+            if case let .rejectedToolCall(rejection) = output { return rejection }
+            return nil
+        }.first
+        let rejection_ = try #require(rejection, "the undeclared call must surface as a rejection")
+        #expect(rejection_.reason == .undeclaredTool)
+        #expect(rejection_.toolName == "bash")
+        #expect(
+            rejection_.rawTextPreview.contains(
+                "ls -h /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results"
+            ))
+    }
+
     @Test("Test Qwen3.5 Format - No Arguments")
     func testQwen35FormatNoArgs() throws {
         let processor = ToolCallProcessor(format: .qwen35)
