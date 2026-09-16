@@ -257,6 +257,18 @@ public struct Gemma4Configuration: Codable, Sendable {
         case visionSoftTokensPerImage = "vision_soft_tokens_per_image"
         case quantization
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        textConfig = try container.decode(G4TextConfig.self, forKey: .textConfig)
+        visionConfig = try container.decode(Gemma4VisionConfig.self, forKey: .visionConfig)
+        modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "gemma4"
+        imageTokenId = try container.decodeIfPresent(Int.self, forKey: .imageTokenId) ?? 258_880
+        visionSoftTokensPerImage =
+            try container.decodeIfPresent(Int.self, forKey: .visionSoftTokensPerImage) ?? 280
+        quantization = try container.decodeIfPresent(
+            BaseConfiguration.Quantization.self, forKey: .quantization)
+    }
 }
 
 // MARK: - Vision Components
