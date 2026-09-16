@@ -211,6 +211,8 @@ public enum VLMProcessorTypeRegistry {
             Gemma4ProcessorConfiguration.self, Gemma4Processor.init),
         "Gemma4UnifiedProcessor": create(
             Gemma4UnifiedProcessorConfiguration.self, Gemma4UnifiedProcessor.init),
+        "MuseGlimmerProcessor": create(
+            MuseGlimmerProcessorConfiguration.self, MuseGlimmerProcessor.init),
         "NemotronHOmniProcessor": create(
             NemotronHOmniProcessorConfiguration.self, NemotronHOmniProcessor.init),
         "Zaya1VLProcessor": create(

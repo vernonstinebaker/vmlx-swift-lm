@@ -29,4 +29,23 @@ struct RecoveredModelRegistrationTests {
     func museGlimmerIsRegistered() {
         #expect(VLMTypeRegistry.supportedModelTypes.contains("muse_glimmer"))
     }
+
+    @Test("Muse Glimmer processor is registered")
+    func museGlimmerProcessorIsRegistered() async throws {
+        let data = Data(
+            """
+            {
+              "processor_class": "MuseGlimmerProcessor",
+              "image_processor": {
+                "patch_size": 16,
+                "max_soft_tokens": 4
+              }
+            }
+            """.utf8)
+        let processor = try await VLMProcessorTypeRegistry.shared.createModel(
+            configuration: data,
+            processorType: "MuseGlimmerProcessor",
+            tokenizer: TestTokenizer())
+        #expect(processor is MuseGlimmerProcessor)
+    }
 }
