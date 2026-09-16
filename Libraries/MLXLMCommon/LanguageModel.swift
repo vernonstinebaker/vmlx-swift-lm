@@ -88,12 +88,15 @@ public struct LMInput {
         public let pixels: MLXArray
         /// Time, height, and width of the images
         public let frames: [THW]?
+        /// Optional per-patch 2D coordinates, used by Unified-style vision embedders.
+        public let positionIds: MLXArray?
 
         public init(
-            pixels: MLXArray, frames: [THW]? = nil
+            pixels: MLXArray, frames: [THW]? = nil, positionIds: MLXArray? = nil
         ) {
             self.pixels = pixels
             self.frames = frames
+            self.positionIds = positionIds
         }
     }
 
@@ -103,12 +106,14 @@ public struct LMInput {
 
         public let pixels: MLXArray
         public let frames: [THW]?
+        public let positionIds: MLXArray?
 
         public init(
-            pixels: MLXArray, frames: [THW]? = nil
+            pixels: MLXArray, frames: [THW]? = nil, positionIds: MLXArray? = nil
         ) {
             self.pixels = pixels
             self.frames = frames
+            self.positionIds = positionIds
         }
     }
 
