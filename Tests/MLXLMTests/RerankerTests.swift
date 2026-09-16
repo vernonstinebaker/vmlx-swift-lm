@@ -682,8 +682,8 @@ private func makeEmbedderContainer(
 private func makeModelContainer(
     model: any LanguageModel,
     tokenizer: any Tokenizer
-) -> ModelContainer {
-    ModelContainer(
+) -> MLXLMCommon.ModelContainer {
+    MLXLMCommon.ModelContainer(
         context: ModelContext(
             configuration: ModelConfiguration(id: "test/reranker"),
             model: model,

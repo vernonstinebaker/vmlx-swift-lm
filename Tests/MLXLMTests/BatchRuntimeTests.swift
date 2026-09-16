@@ -36,7 +36,7 @@ struct BatchRuntimeTests {
     }
 
     @Test("Continuation state stacks and splits on the batch axis")
-    func continuationStateStacksAlongBatch() {
+    func continuationStateStacksAlongBatch() throws {
         let key = LMOutput.Key<MLXArray>("rope_deltas")
         var first = LMOutput.State()
         var second = LMOutput.State()
@@ -53,7 +53,7 @@ struct BatchRuntimeTests {
     }
 
     @Test("Non-batch-leading state keys are omitted so stacking can still succeed")
-    func continuationStateOmitsNonBatchLeadingKeys() {
+    func continuationStateOmitsNonBatchLeadingKeys() throws {
         let rope = LMOutput.Key<MLXArray>("rope_deltas")
         let positions = LMOutput.Key<MLXArray>("precomputed_position_ids")
         var first = LMOutput.State()

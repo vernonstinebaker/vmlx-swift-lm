@@ -206,7 +206,7 @@ final class Qwen35ContinuationTests: XCTestCase {
         MLXRandom.seed(23)
         let model = try makeTinyModel()
         let prefix = textTokens(5)
-        let baseCache = model.newCache(parameters: nil)
+        let baseCache = try model.newCache(parameters: nil)
         let rootTokenID = sampleLastToken(model(prefix, cache: baseCache))
 
         let rootCache = DDTreeCacheIntegration.fork(baseCache)
@@ -247,7 +247,7 @@ final class Qwen35ContinuationTests: XCTestCase {
         MLXRandom.seed(29)
         let model = try makeTinyModel()
         let prefix = textTokens(4)
-        let baseCache = model.newCache(parameters: nil)
+        let baseCache = try model.newCache(parameters: nil)
         let rootTokenID = sampleLastToken(model(prefix, cache: baseCache))
 
         let rootCache = DDTreeCacheIntegration.fork(baseCache)

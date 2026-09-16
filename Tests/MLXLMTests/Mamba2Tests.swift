@@ -34,7 +34,7 @@ final class Mamba2Tests: XCTestCase {
         let model = Mamba2Model(try makeConfig())
         let inputs = MLXArray([1, 2, 3, 4, 5] as [Int32]).reshaped(1, 5)
 
-        let logits = model(inputs, cache: model.newCache(parameters: nil))
+        let logits = model(inputs, cache: try model.newCache(parameters: nil))
         eval(logits)
 
         XCTAssertEqual(logits.shape, [1, 5, 32])
@@ -43,7 +43,7 @@ final class Mamba2Tests: XCTestCase {
     func testNewCacheIsMambaCachePerLayer() throws {
         let config = try makeConfig()
         let model = Mamba2Model(config)
-        let cache = model.newCache(parameters: nil)
+        let cache = try model.newCache(parameters: nil)
 
         XCTAssertEqual(cache.count, config.numHiddenLayers)
         XCTAssertTrue(cache.allSatisfy { $0 is MambaCache })

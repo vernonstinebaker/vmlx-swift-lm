@@ -1087,7 +1087,7 @@ private func runMTP(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: model,
         drafter: drafter,
-        mainCache: model.newCache(parameters: nil),
+        mainCache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: maxTokens, temperature: 0),
         blockSize: blockSize
     )
@@ -1102,7 +1102,7 @@ private func runGreedy(
     var iter = try TokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         model: model,
-        cache: model.newCache(parameters: nil),
+        cache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: maxTokens, temperature: 0)
     )
     var tokens = [Int]()
@@ -1176,7 +1176,7 @@ private func expectSourcelessPrefillStandsDown(
     var refusedIterator = try MTPSpeculativeTokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: refused, drafter: MockDrafter(draftedTokenValue: 7),
-        mainCache: refused.newCache(parameters: nil),
+        mainCache: try refused.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: 4, temperature: 0), blockSize: 4)
     #expect(
         refused.forwardCallCount == 1,
@@ -1439,7 +1439,7 @@ func testEveryRoundLeavesTheLeavesInStepWithTheTimeline() throws {
     var iter = try MTPSpeculativeTokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: model, drafter: MockDrafter(draftedTokenValue: 7),
-        mainCache: model.newCache(parameters: nil),
+        mainCache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: window * 6, temperature: 0), blockSize: 4)
 
     var emitted = 0
@@ -1469,7 +1469,7 @@ func testStoppingEarlyLeavesTheTimelineAtWhatWasEmitted(stopAfter: Int) throws {
     var iter = try MTPSpeculativeTokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: model, drafter: MockDrafter(draftedTokenValue: 7),
-        mainCache: model.newCache(parameters: nil),
+        mainCache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: window * 6, temperature: 0), blockSize: 4)
 
     var emitted = 0
@@ -1507,7 +1507,7 @@ func testStoppingEarlyOnMixedWidthSlidingLayers(stopAfter: Int) throws {
     var iter = try MTPSpeculativeTokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: model, drafter: MockDrafter(draftedTokenValue: 7),
-        mainCache: model.newCache(parameters: nil),
+        mainCache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: 48, temperature: 0), blockSize: 4)
 
     var emitted = 0
@@ -1549,7 +1549,7 @@ func testDiscardingAGeneratedTokenDoesNotMoveTheTimeline() throws {
     var iter = try MTPSpeculativeTokenIterator(
         input: LMInput(tokens: MLXArray(prompt)),
         mainModel: model, drafter: MockDrafter(draftedTokenValue: 7),
-        mainCache: model.newCache(parameters: nil),
+        mainCache: try model.newCache(parameters: nil),
         parameters: GenerateParameters(maxTokens: window * 4, temperature: 0), blockSize: 4)
 
     var emitted = 0

@@ -11,7 +11,7 @@ struct CompiledBatchDecodeTests {
         "Compiled decode advances fixed-shape caches",
         .enabled(if: ProcessInfo.processInfo.environment["MLX_RUN_COMPILED_TESTS"] == "1")
     )
-    func compiledDecodeAdvancesCache() {
+    func compiledDecodeAdvancesCache() throws {
         let configuration = LlamaConfiguration(
             hiddenSize: 64,
             hiddenLayers: 2,
@@ -22,7 +22,7 @@ struct CompiledBatchDecodeTests {
             kvHeads: 4)
         let model = LlamaModel(configuration)
         let prompt = MLXArray(Int32(1) ..< Int32(9))
-        let cache = model.newCache(parameters: nil)
+        let cache = try model.newCache(parameters: nil)
         let prefill = model(
             LMInput.Text(tokens: prompt)[text: .newAxis],
             cache: cache,

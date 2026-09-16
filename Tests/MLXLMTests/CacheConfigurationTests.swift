@@ -431,7 +431,7 @@ private func legacyStatus(cache: [KVCache], maxKVSize: Int) throws -> KVCacheSta
     var parameters = GenerateParameters()
     parameters.maxKVSize = 1024
 
-    let caches = model.newCache(parameters: parameters)
+    let caches = try model.newCache(parameters: parameters)
     #expect(caches.allSatisfy { $0 is MambaCache })
 
     let status = try model.cacheStatus(parameters: parameters)
