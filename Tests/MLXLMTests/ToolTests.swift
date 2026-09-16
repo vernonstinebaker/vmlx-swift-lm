@@ -356,6 +356,45 @@ struct ToolTests {
         #expect(toolCall.function.arguments["location"] == .string("Tokyo"))
     }
 
+    @Test("Qwen3.8 XML shell call for an undeclared tool surfaces through the streaming processor")
+    func testQwen38ShellCallSurfacesThroughProcessor() throws {
+        // Regression: servers that gate on declared tools leak the raw
+        // <tool_call> XML into message content where no client can act on it
+        // (observed with Qwen3.8 hallucinating `bash`). The processor must
+        // surface every syntactically valid call; policy belongs to the
+        // client. Formatting matches the observed Qwen3.8 emission exactly.
+        let processor = ToolCallProcessor(
+            format: .xmlFunction,
+            tools: [
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "read_file",
+                        "parameters": ["type": "object"],
+                    ] as [String: any Sendable],
+                ]
+            ])
+        let content = """
+            <tool_call>
+            <function=bash>
+            <parameter=command>
+            ls -h /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results && file /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results/* | head -n 100
+            </parameter>
+            </function>
+            </tool_call>
+            """
+
+        _ = processor.processChunk(content)
+
+        #expect(processor.toolCalls.count == 1)
+        let toolCall = try #require(processor.toolCalls.first)
+        #expect(toolCall.function.name == "bash")
+        #expect(
+            toolCall.function.arguments["command"] == .string(
+                "ls -h /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results && file /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results/* | head -n 100"
+            ))
+    }
+
     @Test("Test Qwen3.5 Format - No Arguments")
     func testQwen35FormatNoArgs() throws {
         let processor = ToolCallProcessor(format: .xmlFunction)
