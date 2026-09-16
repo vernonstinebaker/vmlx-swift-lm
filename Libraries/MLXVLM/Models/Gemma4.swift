@@ -190,7 +190,7 @@ struct G4TextConfig: Codable, Sendable {
         case ropeParameters = "rope_parameters"
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         hiddenSize = try c.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2816
         numHiddenLayers = try c.decodeIfPresent(Int.self, forKey: .numHiddenLayers) ?? 30
@@ -268,6 +268,77 @@ public struct Gemma4Configuration: Codable, Sendable {
             try container.decodeIfPresent(Int.self, forKey: .visionSoftTokensPerImage) ?? 280
         quantization = try container.decodeIfPresent(
             BaseConfiguration.Quantization.self, forKey: .quantization)
+    }
+}
+
+public struct Gemma4UnifiedVisionConfiguration: Codable, Sendable {
+    let modelPatchSize: Int
+    let mmEmbedDim: Int
+    let mmPositionEmbeddingSize: Int
+    let outputProjectionDimensions: Int
+
+    enum CodingKeys: String, CodingKey {
+        case modelPatchSize = "model_patch_size"
+        case mmEmbedDim = "mm_embed_dim"
+        case mmPositionEmbeddingSize = "mm_posemb_size"
+        case outputProjectionDimensions = "output_proj_dims"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelPatchSize = try container.decodeIfPresent(Int.self, forKey: .modelPatchSize) ?? 48
+        mmEmbedDim = try container.decodeIfPresent(Int.self, forKey: .mmEmbedDim) ?? 3_840
+        mmPositionEmbeddingSize =
+            try container.decodeIfPresent(Int.self, forKey: .mmPositionEmbeddingSize) ?? 1_120
+        outputProjectionDimensions =
+            try container.decodeIfPresent(Int.self, forKey: .outputProjectionDimensions) ?? 3_840
+    }
+}
+
+public struct Gemma4UnifiedConfiguration: Codable, Sendable {
+    let textConfig: G4TextConfig
+    let visionConfig: Gemma4UnifiedVisionConfiguration?
+    let modelType: String
+    let imageTokenId: Int
+    let quantization: BaseConfiguration.Quantization?
+
+    enum CodingKeys: String, CodingKey {
+        case textConfig = "text_config"
+        case visionConfig = "vision_config"
+        case modelType = "model_type"
+        case imageTokenId = "image_token_id"
+        case quantization
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        textConfig = try container.decode(G4TextConfig.self, forKey: .textConfig)
+        visionConfig = try container.decodeIfPresent(
+            Gemma4UnifiedVisionConfiguration.self, forKey: .visionConfig)
+        modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "gemma4_unified"
+        imageTokenId = try container.decodeIfPresent(Int.self, forKey: .imageTokenId) ?? 258_880
+        quantization = try container.decodeIfPresent(
+            BaseConfiguration.Quantization.self, forKey: .quantization)
+    }
+}
+
+private final class Gemma4UnifiedVisionEmbedder: Module {
+    @ModuleInfo(key: "patch_ln1") var patchLayerNorm1: LayerNorm
+    @ModuleInfo(key: "patch_dense") var patchDense: Linear
+    @ModuleInfo(key: "patch_ln2") var patchLayerNorm2: LayerNorm
+    @ParameterInfo(key: "pos_embedding") var positionEmbedding: MLXArray
+    @ModuleInfo(key: "pos_norm") var positionNorm: LayerNorm
+
+    init(_ config: Gemma4UnifiedVisionConfiguration) {
+        let patchDim = config.modelPatchSize * config.modelPatchSize * 3
+        _patchLayerNorm1.wrappedValue = LayerNorm(dimensions: patchDim)
+        _patchDense.wrappedValue = Linear(patchDim, config.mmEmbedDim)
+        _patchLayerNorm2.wrappedValue = LayerNorm(dimensions: config.mmEmbedDim)
+        _positionEmbedding.wrappedValue = MLXArray.zeros([
+            config.mmPositionEmbeddingSize, 2, config.mmEmbedDim,
+        ])
+        _positionNorm.wrappedValue = LayerNorm(dimensions: config.mmEmbedDim)
+        super.init()
     }
 }
 
@@ -999,6 +1070,72 @@ public class Gemma4: Module, VLMModel, KVCacheDimensionProvider {
 }
 
 extension Gemma4: LoRAModel { public var loraLayers: [Module] { languageModel.model.layers } }
+
+public final class Gemma4Unified: Module, VLMModel, KVCacheDimensionProvider {
+    @ModuleInfo(key: "language_model") private var languageModel: G4LanguageModel
+    @ModuleInfo(key: "vision_embedder") private var visionEmbedder: Gemma4UnifiedVisionEmbedder?
+    @ModuleInfo(key: "embed_vision") private var embedVision: MultimodalEmbedder?
+
+    public let config: Gemma4UnifiedConfiguration
+    public var vocabularySize: Int { config.textConfig.vocabSize }
+    public var kvHeads: [Int] {
+        (0 ..< config.textConfig.numHiddenLayers).map { _ in config.textConfig.numKeyValueHeads }
+    }
+
+    public init(_ config: Gemma4UnifiedConfiguration) {
+        self.config = config
+        _languageModel.wrappedValue = G4LanguageModel(config.textConfig)
+        if let visionConfig = config.visionConfig {
+            _visionEmbedder.wrappedValue = Gemma4UnifiedVisionEmbedder(visionConfig)
+            _embedVision.wrappedValue = MultimodalEmbedder(
+                embDim: visionConfig.outputProjectionDimensions,
+                textDim: config.textConfig.hiddenSize)
+        }
+        super.init()
+    }
+
+    public func newCache(parameters: GenerateParameters?) -> [any KVCache] {
+        languageModel.newCache(parameters: parameters)
+    }
+
+    public func prepare(_ input: LMInput, cache: [any KVCache], windowSize _: Int?) throws -> PrepareResult {
+        guard input.image == nil, input.video == nil, input.audio == nil else {
+            throw VLMError.processing("Gemma4 Unified media inputs are not supported by this runtime.")
+        }
+        var embeddings = languageModel.model.emb(input.text.tokens)
+        embeddings = embeddings * MLXArray(sqrt(Float(config.textConfig.hiddenSize)), dtype: embeddings.dtype)
+        let logits = languageModel(
+            input.text.tokens,
+            inputEmbedding: embeddings,
+            cache: paddedCache(cache))
+        return .logits(.init(logits: logits))
+    }
+
+    public func callAsFunction(_ inputs: MLXArray, cache: [any KVCache]?) -> MLXArray {
+        languageModel(inputs, cache: paddedCache(cache))
+    }
+
+    public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        var sanitized = [String: MLXArray]()
+        sanitized.reserveCapacity(weights.count)
+        for (key, value) in weights {
+            if key == "lm_head.weight" || key.hasPrefix("embed_audio.") || key.hasPrefix("audio_tower.") {
+                continue
+            }
+            sanitized[key] = value
+        }
+        return sanitized
+    }
+
+    private func paddedCache(_ cache: [any KVCache]?) -> [KVCache?]? {
+        cache.map { cache in
+            cache.map { $0 as KVCache? }
+                + Array(repeating: nil as KVCache?, count: max(0, config.textConfig.numHiddenLayers - cache.count))
+        }
+    }
+}
+
+extension Gemma4Unified: LoRAModel { public var loraLayers: [Module] { languageModel.model.layers } }
 
 // MARK: - Processor
 

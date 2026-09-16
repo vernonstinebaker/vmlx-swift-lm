@@ -10,10 +10,10 @@ struct RecoveredModelRegistrationTests {
         #expect(VLMTypeRegistry.supportedModelTypes.contains("gemma4_unified"))
     }
 
-    @Test("Gemma 4 Unified accepts its omitted vision-token count")
-    func gemma4UnifiedDefaultsVisionTokenCount() throws {
+    @Test("Gemma 4 Unified accepts its native configuration")
+    func gemma4UnifiedDecodesItsNativeConfiguration() throws {
         let configuration = try JSONDecoder().decode(
-            Gemma4Configuration.self,
+            Gemma4UnifiedConfiguration.self,
             from: Data("""
             {
               "model_type": "gemma4_unified",
@@ -22,7 +22,7 @@ struct RecoveredModelRegistrationTests {
             }
             """.utf8))
 
-        #expect(configuration.visionSoftTokensPerImage == 280)
+        #expect(configuration.modelType == "gemma4_unified")
     }
 
     @Test("Muse Glimmer remains a supported VLM architecture")
