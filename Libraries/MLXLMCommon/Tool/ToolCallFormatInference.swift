@@ -92,7 +92,7 @@ extension ToolCallFormat {
     ///
     /// A model-declared superset remains selected. For example, Qwen 3.5 prompts XML
     /// but its parser deliberately accepts both XML and framed Hermes JSON.
-    package static func resolved(
+    public static func resolved(
         forTokenizerDirectory directory: URL,
         modelFormat: ToolCallFormat? = nil
     ) -> ToolCallFormat? {
