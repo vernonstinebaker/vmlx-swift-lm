@@ -327,7 +327,6 @@ struct OnyxStreamAdapter: TokenStreamDecoder {
                 return false
             }
             return emit(.rejectedToolCall(rejection))
-
         case .protocolError(let message):
             return emit(.protocolError(message))
         case .stop:
