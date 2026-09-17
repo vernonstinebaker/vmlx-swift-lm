@@ -1,5 +1,5 @@
 import Foundation
-import MLXLMCommon
+@testable import MLXLMCommon
 import Testing
 
 struct ToolTests {
@@ -1178,6 +1178,66 @@ struct ToolTests {
             ))
     }
 
+
+    @Test("a rehearsed tool call inside <think> is rejected, never leaked as reasoning")
+    func testReasoningSpanToolAttemptIsRejectedNotLeaked() throws {
+        // Second LLMChat capture (2026-09-17): Qwen3.8 rehearsed
+        // <tool_call><function=exec> inside its <think> block with a malformed
+        // </tool_calls> closer, and the payload rendered in the Thinking
+        // section. Reasoning segments must not bypass the tool channel:
+        // from the first explicit opener the text is held and surfaced as an
+        // explicit rejection; prose before it streams normally.
+        let vocab: [Int: String] = [
+            1: "<think>", 2: "Let me run ", 3: "<tool_call>", 4: "<function=bash>",
+            5: "<parameter=command>", 6: "ls -lh /results", 7: "</parameter>",
+            8: "</function>", 9: "</tool_calls>", 10: "</think>", 11: "Answer: ",
+            12: "done",
+        ]
+        let tok = MapToolTestTokenizer(map: vocab)
+        var decoder = StandardTokenStreamDecoder(
+            tokenizer: tok,
+            format: .json,
+            tools: nil,
+            stopStrings: [],
+            reasoningConfig: ReasoningConfig(
+                startDelimiter: "<think>", endDelimiter: "</think>",
+                promptStrategy: .alwaysOn)
+        )
+
+        var reasoningText = ""
+        var rejections: [RejectedToolCall] = []
+        var responseText = ""
+        for token in [Int](1 ... 12) {
+            _ = decoder.push(token) { event in
+                switch event {
+                case .reasoning(let text): reasoningText += text
+                case .response(let text): responseText += text
+                case .rejectedToolCall(let rejection): rejections.append(rejection)
+                case .toolCall, .protocolError, .stop:
+                    break
+                }
+                return true
+            }
+        }
+        _ = decoder.finish { event in
+            switch event {
+            case .reasoning(let text): reasoningText += text
+            case .response(let text): responseText += text
+            case .rejectedToolCall(let rejection): rejections.append(rejection)
+            case .toolCall, .protocolError, .stop: break
+            }
+            return true
+        }
+
+        let rejection = try #require(rejections.first, "the rehearsed call must surface as a rejection")
+        #expect(rejection.reason == .undeclaredTool)
+        #expect(rejection.toolName == "bash")
+        #expect(rejection.rawTextPreview.contains("ls -lh /results"))
+        #expect(!reasoningText.contains("<tool_call>"), "the payload leaked into reasoning")
+        #expect(!reasoningText.contains("ls -lh /results"))
+        #expect(responseText.contains("done"), "post-reasoning prose must be preserved")
+    }
+
     @Test("Test Qwen3.5 Format - No Arguments")
     func testQwen35FormatNoArgs() throws {
         let processor = ToolCallProcessor(format: .qwen35)
@@ -1799,3 +1859,24 @@ struct ToolTests {
         #expect(second.function.arguments["timezone"] == .string("UTC"))
     }
 }
+
+private struct MapToolTestTokenizer: Tokenizer {
+    let map: [Int: String]
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { map[$0] ?? "" }.joined()
+    }
+    func convertTokenToId(_ token: String) -> Int? {
+        map.first { $0.value == token }?.key
+    }
+    func convertIdToToken(_ id: Int) -> String? { map[id] }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [] }
+}
+

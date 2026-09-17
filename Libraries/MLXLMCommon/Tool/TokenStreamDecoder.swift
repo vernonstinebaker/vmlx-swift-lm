@@ -58,9 +58,13 @@ extension TokenStreamDecoder {
 /// Decoder for ordinary detokenized tool-call syntaxes.
 struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private var detokenizer: NaiveStreamingDetokenizer
+    private let format: ToolCallFormat
     private let toolCallProcessor: ToolCallProcessor
     private var stopStringFilter: StopStringFilter
     private var reasoningCollector: ReasoningTokenCollector?
+    /// Buffered reasoning text from the first explicit tool-protocol opener,
+    /// so a rehearsed call inside `<think>` is rejected instead of leaked.
+    private var reasoningToolAttempt: String?
 
     init(
         tokenizer: any Tokenizer,
@@ -71,6 +75,7 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         reasoningConfig: ReasoningConfig? = nil,
         promptTail: String? = nil
     ) {
+        self.format = format
         self.detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         self.toolCallProcessor = ToolCallProcessor(
             format: format, tools: tools, toolCallPolicy: toolCallPolicy)
@@ -101,8 +106,11 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
             for segment in segments {
                 switch segment {
                 case .reasoning(let text):
-                    guard emit(.reasoning(text)) else { return false }
+                    guard handleReasoningSegment(text, emit: emit) else { return false }
                 case .response(let text):
+                    if let attempt = finalizeReasoningToolAttempt() {
+                        guard emit(attempt) else { return false }
+                    }
                     guard processResponse(text, emit: emit) else { return false }
                 }
             }
@@ -115,14 +123,20 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
     }
 
     mutating func finish(emit: (TokenStreamEvent) -> Bool) -> Bool {
+        if let attempt = finalizeReasoningToolAttempt() {
+            guard emit(attempt) else { return false }
+        }
         if var reasoningCollector {
             let segments = reasoningCollector.finalize()
             self.reasoningCollector = reasoningCollector
             for segment in segments {
                 switch segment {
                 case .reasoning(let text):
-                    guard emit(.reasoning(text)) else { return false }
+                    guard handleReasoningSegment(text, emit: emit) else { return false }
                 case .response(let text):
+                    if let attempt = finalizeReasoningToolAttempt() {
+                        guard emit(attempt) else { return false }
+                    }
                     guard processResponse(text, emit: emit) else { return false }
                 }
             }
@@ -135,6 +149,60 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         }
 
         return emitOutputs(toolCallProcessor.processEOSOutputs(), emit: emit)
+    }
+
+    private static let explicitToolOpeners = [
+        "<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]",
+    ]
+
+    /// Routes a reasoning segment: prose before an explicit tool-protocol
+    /// opener streams as reasoning; from the opener onward the text is held
+    /// and ultimately rejected, so a rehearsed call never leaks as text.
+    private mutating func handleReasoningSegment(
+        _ text: String, emit: (TokenStreamEvent) -> Bool
+    ) -> Bool {
+        if reasoningToolAttempt != nil {
+            reasoningToolAttempt?.append(text)
+            return true
+        }
+        var best: (Range<String.Index>, String)?
+        for opener in Self.explicitToolOpeners {
+            if let range = text.range(of: opener),
+                best == nil || range.lowerBound < best!.0.lowerBound
+            {
+                best = (range, opener)
+            }
+        }
+        guard let best else {
+            return emit(.reasoning(text))
+        }
+        let head = String(text[..<best.0.lowerBound])
+        reasoningToolAttempt = String(text[best.0.lowerBound...])
+        if !head.isEmpty {
+            return emit(.reasoning(head))
+        }
+        return true
+    }
+
+    /// Classifies the held attempt. Doctrine unchanged: reasoning-span calls
+    /// are never promoted; they surface only as an explicit rejection.
+    private mutating func finalizeReasoningToolAttempt() -> TokenStreamEvent? {
+        guard let attempt = reasoningToolAttempt else { return nil }
+        reasoningToolAttempt = nil
+        let toolName = Self.explicitToolOpeners.reduce(attempt) { partial, opener in
+            partial.replacingOccurrences(of: opener, with: "")
+        }
+        let nameCandidate =
+            toolName
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        return .rejectedToolCall(
+            RejectedToolCall(
+                reason: nameCandidate.isEmpty ? .missingToolName : .undeclaredTool,
+                format: format,
+                toolName: nameCandidate.isEmpty ? nil : String(nameCandidate),
+                rawText: attempt
+            ))
     }
 
     private mutating func processResponse(
