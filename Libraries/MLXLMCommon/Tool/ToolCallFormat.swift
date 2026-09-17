@@ -141,6 +141,27 @@ public enum ToolCallFormat: String, Hashable, Sendable, Codable, CaseIterable {
     /// Example: `<|channel|>commentary to=functions.get_weather<|message|>{"location": "Tokyo"}<|call|>`
     case gptOSS = "gpt_oss"
 
+    /// Closing markers that frame this dialect's tool-call payload. Empty for
+    /// dialects whose parser is structural and has no literal end token.
+    /// A serving layer can use these as early-halt stop strings once the
+    /// resolved dialect is known, instead of buffering to the natural EOS.
+    public var closingStopStrings: Set<String> {
+        switch self {
+        case .json, .lfm2, .qwen35, .glm4, .mistral:
+            ["</tool_call>"]
+        case .xmlFunction:
+            ["</tool_call>", "</function>"]
+        case .miniCPM5:
+            ["</function>"]
+        case .kimiK2, .gptOSS:
+            ["<|tool_call_end|>"]
+        case .minimaxM2:
+            ["</invoke>"]
+        case .gemma, .gemma4, .atem, .llama3:
+            []
+        }
+    }
+
     // MARK: - Factory Methods
 
     /// Create the appropriate parser for this format.
