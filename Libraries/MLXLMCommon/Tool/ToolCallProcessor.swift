@@ -33,6 +33,7 @@ public class ToolCallProcessor {
 
     // MARK: - Properties
 
+    private let toolCallPolicy: ToolCallPolicy
     private let validationPolicy: ToolCallValidationPolicy
     private let format: ToolCallFormat
     private let parser: any ToolCallParser
@@ -105,6 +106,7 @@ public class ToolCallProcessor {
         toolCallPolicy: ToolCallPolicy = .init()
     ) {
         self.validationPolicy = toolCallPolicy.validation
+        self.toolCallPolicy = toolCallPolicy
         self.format = format
         self.parser = format.createParser()
         self.tools = tools
@@ -1047,6 +1049,13 @@ public class ToolCallProcessor {
     @discardableResult
     private func appendToolCall(_ call: ToolCall, rawText: String) -> Bool {
         guard allowedToolNames?.contains(call.function.name) ?? true else {
+            if toolCallPolicy.authorization == .surfaceToClient {
+                // Client-decides: the model's intent arrives as a structured
+                // call; normalization still runs with the declared tools.
+                let normalized = ToolArgumentNormalization.normalize(call, tools: tools)
+                toolCalls.append(normalized)
+                return true
+            }
             appendRejectedToolCall(
                 reason: .undeclaredTool,
                 rawText: rawText,
