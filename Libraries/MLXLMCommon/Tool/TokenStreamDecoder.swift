@@ -59,6 +59,8 @@ extension TokenStreamDecoder {
 struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private var detokenizer: NaiveStreamingDetokenizer
     private let format: ToolCallFormat
+    private let tools: [[String: any Sendable]]?
+    private let toolCallPolicy: ToolCallPolicy
     private let toolCallProcessor: ToolCallProcessor
     private var stopStringFilter: StopStringFilter
     private var reasoningCollector: ReasoningTokenCollector?
@@ -75,6 +77,8 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         reasoningConfig: ReasoningConfig? = nil,
         promptTail: String? = nil
     ) {
+        self.tools = tools
+        self.toolCallPolicy = toolCallPolicy
         self.format = format
         self.detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
         self.toolCallProcessor = ToolCallProcessor(
@@ -192,8 +196,46 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         let toolName = Self.explicitToolOpeners.reduce(attempt) { partial, opener in
             partial.replacingOccurrences(of: opener, with: "")
         }
+        // Client-decides: a parseable attempt is delivered as a structured
+        // call through a dialect-matched processor, malformed closers and all.
+        let dialect: ToolCallFormat
+        if attempt.contains("<function=") {
+            dialect = .qwen35
+        } else if attempt.contains("[TOOL_CALLS]") {
+            dialect = .mistral
+        } else if attempt.contains("<|tool_call>") {
+            dialect = .gptOSS
+        } else {
+            dialect = .json
+        }
+        // Qwen-family checkpoints intermittently emit the plural closer
+        // `</tool_calls>` for a `<tool_call>` frame; normalize the known
+        // hallucinations so the lenient parse can complete.
+        var normalizedAttempt = attempt
+            .replacingOccurrences(of: "</tool_calls>", with: "</tool_call>")
+        normalizedAttempt += dialect.closingStopStrings.joined()
+        var promotionProcessor = ToolCallProcessor(
+            format: dialect, tools: tools, toolCallPolicy: toolCallPolicy)
+        var outputs = promotionProcessor.processChunkOutputs(normalizedAttempt)
+        if !outputs.contains(where: { if case .toolCall = $0 { return true }; return false }) {
+            for frame in dialect.closingStopStrings {
+                outputs += promotionProcessor.processChunkOutputs(frame)
+            }
+            outputs += promotionProcessor.processEOSOutputs()
+        }
+        if let call = outputs.compactMap({ output -> ToolCall? in
+            if case let .toolCall(call) = output { return call }
+            return nil
+        }).first {
+            return .toolCall(call)
+        }
+
+        // Unparseable: explicit rejection with bounded preview.
+        let stripped = Self.explicitToolOpeners.reduce(attempt) { partial, opener in
+            partial.replacingOccurrences(of: opener, with: "")
+        }
         let nameCandidate =
-            toolName
+            stripped
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
         return .rejectedToolCall(

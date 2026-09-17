@@ -88,3 +88,11 @@ Apple-published agent skills are installed in `~/.agents/skills/` (exported from
 - **`modernize-tests`** — Modernize tests — migrate XCTest to Swift Testing and adopt current patterns (`@Suite`, `@Test`, `#expect`).
 - **`adopt-c-bounds-safety`** — C `-fbounds-safety` — `__counted_by`/`__sized_by`/`__single` annotations, build settings and modes, runtime debugging of bounds violations.
 
+
+## Xcode project format
+
+`IntegrationTesting.xcodeproj` uses the Xcode 27.2 JSON project format (`project.xcproj`,
+not `project.pbxproj`) — the preferred format across this workspace. `project.xcproj` is
+the source of truth: edit it directly (hierarchical JSON, no UUID wrangling), then canonicalize
+with `xcprojformatter --update IntegrationTesting.xcodeproj`. For build settings, targets, and
+groups prefer the `xcodeproj` CLI. Full reference: the workspace root `AGENTS.md`.
