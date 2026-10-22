@@ -1371,3 +1371,5 @@ extension Qwen35TextModel {
     public var toolCallFormat: ToolCallFormat? { .qwen35 }
     public var reasoningConfig: ReasoningConfig? { QwenReasoningProtocol.tagged }
 }
+
+extension Qwen35TextModel: TextOnlyContinuationStateReplayable {}

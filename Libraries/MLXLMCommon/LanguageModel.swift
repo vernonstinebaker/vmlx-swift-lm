@@ -293,7 +293,8 @@ public struct LMOutput {
             if states.count == 1 { return first }
             let aligned = states.compactMap { $0.batchLeadingArrays() }
             guard aligned.count == states.count else { return nil }
-            let keys = Set(aligned[0].keys).intersection(Set(aligned.dropFirst().flatMap { $0.keys }))
+            let keys = Set(aligned[0].keys).intersection(
+                Set(aligned.dropFirst().flatMap { $0.keys }))
             guard !keys.isEmpty else { return nil }
             var stacked: [String: MLXArray] = [:]
             stacked.reserveCapacity(keys.count)
@@ -538,3 +539,8 @@ package protocol HiddenStateLanguageModel: LanguageModel {
     /// same logits as ``LanguageModel/callAsFunction(_:cache:)``.
     func projectLogits(_ hiddenStates: MLXArray) -> MLXArray
 }
+
+/// Marks a model whose text-only continuation state is a pure position
+/// projection of the KV cache. A carried session may then trim and reuse a
+/// warm prefix even though the model returned non-nil `LMOutput.State`.
+public protocol TextOnlyContinuationStateReplayable {}

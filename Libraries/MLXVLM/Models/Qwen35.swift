@@ -2196,3 +2196,5 @@ extension Qwen35: DFlash2VerifyRollbackModel {
         languageModel.commitVerifiedBlock(cache: cache, acceptedInputs: acceptedInputs)
     }
 }
+
+extension Qwen35: TextOnlyContinuationStateReplayable {}

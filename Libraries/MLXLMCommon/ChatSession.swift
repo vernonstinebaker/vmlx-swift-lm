@@ -1188,12 +1188,16 @@ public final class ChatSession {
                                 draftCacheIsAligned = true
                             }
 
+                            let replayableTextOnlyState =
+                                !carriesPreparedMedia
+                                && model is any TextOnlyContinuationStateReplayable
                             let turn = PromptCacheTurn(
                                 promptTokens: promptTokenIds,
                                 carriesNewMedia: containsNewMedia,
                                 carriesPreparedMedia: carriesPreparedMedia,
                                 carriesAttentionMask: input.text.mask != nil,
-                                carriesModelState: lmState != nil,
+                                carriesModelState:
+                                    lmState != nil && !replayableTextOnlyState,
                                 isToolResultContinuation: isToolResultContinuation,
                                 previousGenerationUncommittedTokens:
                                     currentConversation.uncommittedTokens,

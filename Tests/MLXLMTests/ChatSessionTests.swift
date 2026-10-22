@@ -1190,7 +1190,8 @@ public class ChatSessionTests: XCTestCase {
         return ChatSession(
             model(processor: processor),
             generateParameters: GenerateParameters(
-                maxTokens: outputTokens.count + 1, temperature: 0),
+                maxTokens: outputTokens.count + 1, temperature: 0,
+                toolCallPolicy: ToolCallPolicy(authorization: .rejectUndeclared)),
             components: components,
             tools: tools,
             toolDispatch: toolDispatch)
