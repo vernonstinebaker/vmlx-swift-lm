@@ -24,7 +24,7 @@ public struct ToolCallPolicy: Hashable, Sendable {
     public init(
         recovery: ToolCallRecoveryPolicy = .conservative,
         validation: ToolCallValidationPolicy = .permissive,
-        authorization: ToolCallAuthorizationPolicy = .surfaceToClient
+        authorization: ToolCallAuthorizationPolicy = .rejectUndeclared
     ) {
         self.recovery = recovery
         self.validation = validation

@@ -1161,7 +1161,8 @@ struct ToolTests {
                         "parameters": ["type": "object"],
                     ] as [String: any Sendable],
                 ]
-            ])
+            ],
+            toolCallPolicy: ToolCallPolicy(authorization: .surfaceToClient))
         let content = """
             <tool_call>
             <function=bash>
@@ -1222,6 +1223,7 @@ struct ToolTests {
             format: .json,
             tools: nil,
             stopStrings: [],
+            toolCallPolicy: ToolCallPolicy(authorization: .surfaceToClient),
             reasoningConfig: ReasoningConfig(
                 startDelimiter: "<think>", endDelimiter: "</think>",
                 promptStrategy: .alwaysOn)
