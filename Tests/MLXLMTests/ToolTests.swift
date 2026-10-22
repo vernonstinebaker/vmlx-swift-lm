@@ -1,6 +1,7 @@
 import Foundation
-@testable import MLXLMCommon
 import Testing
+
+@testable import MLXLMCommon
 
 struct ToolTests {
     private func toolSchemas(_ names: String...) -> [[String: any Sendable]] {
@@ -1179,10 +1180,11 @@ struct ToolTests {
         // Client-decides (LLMServerPlus product decision 2026-09-17): the
         // undeclared call surfaces as a structured call the client maps,
         // executes, or displays - never as message content, never dropped.
-        let call = (outputs.compactMap { output -> ToolCall? in
-            if case let .toolCall(call) = output { return call }
-            return nil
-        }.first) ?? processor.toolCalls.first
+        let call =
+            (outputs.compactMap { output -> ToolCall? in
+                if case .toolCall(let call) = output { return call }
+                return nil
+            }.first) ?? processor.toolCalls.first
         // Non-vanishing contract: fed the raw payload, a direct processor
         // consumer sees either the surfaced structured call or an explicit
         // rejection with the preview retained. The decoder additionally
@@ -1197,8 +1199,9 @@ struct ToolTests {
         }
     }
 
-
-    @Test("a rehearsed tool call inside <think> is delivered as a structured call, never leaked as reasoning")
+    @Test(
+        "a rehearsed tool call inside <think> is delivered as a structured call, never leaked as reasoning"
+    )
     func testReasoningSpanToolAttemptIsDeliveredNotLeaked() throws {
         // Second LLMChat capture (2026-09-17): Qwen3.8 rehearsed
         // <tool_call><function=exec> inside <think> with a malformed
@@ -1256,7 +1259,8 @@ struct ToolTests {
         #expect(!reasoningText.contains("ls -lh /results"))
         #expect(responseText.contains("done"), "post-reasoning prose must be preserved")
 
-        let call = try #require(promoted.first, "the rehearsal must be delivered as a structured call")
+        let call = try #require(
+            promoted.first, "the rehearsal must be delivered as a structured call")
         #expect(call.function.name == "exec")
         #expect(call.function.arguments["command"] == .string("ls -lh /results"))
     }
@@ -1324,21 +1328,51 @@ struct ToolTests {
         #expect(call.function.arguments["action"] == .string("start"))
     }
 
-    @Test("Qwen3.5 applies the declared-tool boundary to canonical XML too")
-    func testQwen35XMLRejectsUndeclaredTool() {
+    @Test("Qwen3.5 parser preserves XML syntax while the processor rejects undeclared names")
+    func testQwen35XMLUndeclaredToolSurfacesToProcessor() throws {
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
         let content =
             "<tool_call><function=erase_everything></function></tool_call>"
 
-        #expect(parser.parse(content: content, tools: Self.qwen35Tools) == nil)
+        let parsed = try #require(parser.parse(content: content, tools: Self.qwen35Tools))
+        #expect(parsed.function.name == "erase_everything")
+
+        let processor = ToolCallProcessor(
+            format: .qwen35,
+            tools: Self.qwen35Tools,
+            toolCallPolicy: ToolCallPolicy(authorization: .rejectUndeclared))
+        var outputs = processor.processChunkOutputs(content)
+        outputs += processor.processEOSOutputs()
+        #expect(processor.toolCalls.isEmpty)
+        let rejection = outputs.compactMap { output -> RejectedToolCall? in
+            if case .rejectedToolCall(let rejection) = output { return rejection }
+            return nil
+        }.first
+        #expect(rejection?.reason == .undeclaredTool)
     }
 
-    @Test("Qwen3.5 fallback never authorizes undeclared JSON tools")
-    func testQwen35JSONFallbackRejectsUndeclaredTool() {
+    @Test(
+        "Qwen3.5 parser preserves JSON fallback syntax while the processor rejects undeclared names"
+    )
+    func testQwen35JSONFallbackUndeclaredToolSurfacesToProcessor() throws {
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
         let content = #"<tool_call>{"name":"erase_everything","arguments":{}}</tool_call>"#
 
-        #expect(parser.parse(content: content, tools: Self.qwen35Tools) == nil)
+        let parsed = try #require(parser.parse(content: content, tools: Self.qwen35Tools))
+        #expect(parsed.function.name == "erase_everything")
+
+        let processor = ToolCallProcessor(
+            format: .qwen35,
+            tools: Self.qwen35Tools,
+            toolCallPolicy: ToolCallPolicy(authorization: .rejectUndeclared))
+        var outputs = processor.processChunkOutputs(content)
+        outputs += processor.processEOSOutputs()
+        #expect(processor.toolCalls.isEmpty)
+        let rejection = outputs.compactMap { output -> RejectedToolCall? in
+            if case .rejectedToolCall(let rejection) = output { return rejection }
+            return nil
+        }.first
+        #expect(rejection?.reason == .undeclaredTool)
     }
 
     @Test("Qwen3.5 fallback rejects malformed and mixed-dialect payloads")

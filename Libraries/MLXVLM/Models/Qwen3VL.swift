@@ -199,7 +199,12 @@ public struct Qwen3VLProcessor: UserInputProcessor {
         }
 
         let promptArray = MLXArray(promptTokens).expandedDimensions(axis: 0)
-        let mask = ones(like: promptArray).asType(.int8)
+        // Text-only prompts carry no attention mask. A mask makes ChatSession
+        // rebuild instead of reusing a warm KV prefix. Fork patch for #700
+        // (upstream covers the sibling processors, not Qwen3VL yet).
+        let mask: MLXArray? =
+            processedImage == nil && processedVideo == nil
+            ? nil : ones(like: promptArray).asType(.int8)
 
         return LMInput(
             text: .init(tokens: promptArray, mask: mask),

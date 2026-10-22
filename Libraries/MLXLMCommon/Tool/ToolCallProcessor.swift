@@ -1054,6 +1054,9 @@ public class ToolCallProcessor {
                 // call; normalization still runs with the declared tools.
                 let normalized = ToolArgumentNormalization.normalize(call, tools: tools)
                 toolCalls.append(normalized)
+                if orderedOutputEnabled {
+                    orderedOutputQueue.append(.toolCall(normalized))
+                }
                 return true
             }
             appendRejectedToolCall(
