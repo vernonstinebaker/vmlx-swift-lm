@@ -133,7 +133,7 @@ final class Qwen35ContinuationTests: XCTestCase {
                     prefill: .init()))
 
             XCTAssertLessThanOrEqual(
-                maxAbsDiff(warmLogits, fullLogits), 1e-3,
+                maxAbsDiff(warmLogits, fullLogits), MatmulPrecision.splitTolerance,
                 "rank-1 warm continuation diverged from full prefill")
         }
     }
@@ -379,7 +379,7 @@ final class Qwen35ContinuationTests: XCTestCase {
                 maxAbsDiff(restoredImageLogits, warmImageLogits), 1e-6,
                 "disk-restored state diverged when a later turn added another image")
             XCTAssertLessThanOrEqual(
-                maxAbsDiff(restoredImageLogits, coldLogits), 1e-3,
+                maxAbsDiff(restoredImageLogits, coldLogits), MatmulPrecision.splitTolerance,
                 "restored two-image continuation diverged from full prefill")
         }
     }

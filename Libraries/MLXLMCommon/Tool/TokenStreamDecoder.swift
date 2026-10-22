@@ -57,7 +57,7 @@ extension TokenStreamDecoder {
 
 /// Decoder for ordinary detokenized tool-call syntaxes.
 struct StandardTokenStreamDecoder: TokenStreamDecoder {
-    private var detokenizer: NaiveStreamingDetokenizer
+    private var detokenizer: any StreamingDetokenizer
     private let format: ToolCallFormat
     private let toolCallProcessor: ToolCallProcessor
     private var stopStringFilter: StopStringFilter
@@ -76,7 +76,7 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         promptTail: String? = nil
     ) {
         self.format = format
-        self.detokenizer = NaiveStreamingDetokenizer(tokenizer: tokenizer)
+        self.detokenizer = tokenizer.makeStreamingDetokenizer()
         self.toolCallProcessor = ToolCallProcessor(
             format: format, tools: tools, toolCallPolicy: toolCallPolicy)
         self.stopStringFilter = StopStringFilter(stopStrings: stopStrings)
@@ -111,7 +111,7 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
                     if let attempt = finalizeReasoningToolAttempt() {
                         guard emit(attempt) else { return false }
                     }
-                    guard processResponse(text, emit: emit) else { return false }
+                    guard process(text, emit: emit) else { return false }
                 }
             }
             return true
@@ -119,7 +119,7 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
 
         detokenizer.append(token: token)
         guard let chunk = detokenizer.next() else { return true }
-        return processResponse(chunk, emit: emit)
+        return process(chunk, emit: emit)
     }
 
     mutating func finish(emit: (TokenStreamEvent) -> Bool) -> Bool {
@@ -137,11 +137,12 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
                     if let attempt = finalizeReasoningToolAttempt() {
                         guard emit(attempt) else { return false }
                     }
-                    guard processResponse(text, emit: emit) else { return false }
+                    guard process(text, emit: emit) else { return false }
                 }
             }
         }
 
+        if let text = detokenizer.finish(), !process(text, emit: emit) { return false }
         if let text = stopStringFilter.finish(),
             !emitOutputs(toolCallProcessor.processChunkOutputs(text), emit: emit)
         {
@@ -205,10 +206,7 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
             ))
     }
 
-    private mutating func processResponse(
-        _ chunk: String,
-        emit: (TokenStreamEvent) -> Bool
-    ) -> Bool {
+    private mutating func process(_ chunk: String, emit: (TokenStreamEvent) -> Bool) -> Bool {
         let result = stopStringFilter.process(chunk)
         if let text = result.text,
             !emitOutputs(toolCallProcessor.processChunkOutputs(text), emit: emit)
