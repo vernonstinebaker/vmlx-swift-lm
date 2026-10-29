@@ -441,6 +441,7 @@ public enum ChatSessionTests {
                 print(text, terminator: "")
                 responseText += text
             case .reasoning:
+                // Thinking is not the answer these checks assert on.
                 break
             case .toolCall(let toolCall):
                 toolCalls.append(toolCall)

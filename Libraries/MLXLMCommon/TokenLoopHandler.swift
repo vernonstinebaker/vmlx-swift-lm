@@ -75,11 +75,12 @@ public struct TextToolTokenLoopHandler: TokenLoopHandler {
     public init(
         tokenizer: Tokenizer, stopStrings: Set<String> = [], format: ToolCallFormat,
         tools: [[String: any Sendable]]? = nil,
-        toolCallPolicy: ToolCallPolicy = .init()
+        toolCallPolicy: ToolCallPolicy = .init(),
+        reasoning: (config: ReasoningConfig, primedInside: Bool)? = nil
     ) {
         self.decoder = format.makeTokenStreamDecoder(
             tokenizer: tokenizer, tools: tools, stopStrings: stopStrings,
-            toolCallPolicy: toolCallPolicy)
+            toolCallPolicy: toolCallPolicy, reasoning: reasoning)
     }
 
     public var additionalStopTokenIDs: Set<Int> { decoder.additionalStopTokenIDs }
@@ -146,11 +147,8 @@ public struct TextToolTokenLoopHandler: TokenLoopHandler {
         emit: (sending Generation) -> Bool
     ) -> TokenLoopDisposition {
         switch event {
-        case .reasoning(let text):
-            // Fork divergence: LLMServerPlus consumes reasoning events on the
-            // public Generation stream so framed protocols (Harmony/Onyx) keep
-            // their thinking channel on the direct generate path.
-            if !emit(.reasoning(text)) {
+        case .reasoning(let reasoning):
+            if !emit(.reasoning(reasoning)) {
                 return .cancelled
             }
             return .more
