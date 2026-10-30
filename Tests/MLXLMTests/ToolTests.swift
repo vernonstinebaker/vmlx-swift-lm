@@ -1224,9 +1224,12 @@ struct ToolTests {
             tools: nil,
             stopStrings: [],
             toolCallPolicy: ToolCallPolicy(authorization: .surfaceToClient),
-            reasoningConfig: ReasoningConfig(
-                startDelimiter: "<think>", endDelimiter: "</think>",
-                promptStrategy: .alwaysOn)
+            reasoning: (
+                config: ReasoningConfig(
+                    startDelimiter: "<think>", endDelimiter: "</think>",
+                    promptStrategy: .alwaysOn),
+                primedInside: false
+            )
         )
 
         var reasoningText = ""

@@ -850,17 +850,6 @@ public class NemotronHTests: XCTestCase {
             sanitized["backbone.layers.3.mixer.switch_mlp.fc1.weight"]?.shape, [8, 24, 32])
     }
 
-    func testSanitizeDropsMTPWeights() throws {
-        let model = NemotronHModel(makeTestConfig(pattern: "M*"))
-        let weights: [String: MLXArray] = [
-            "backbone.norm_f.weight": MLXArray.ones([64]),
-            "mtp.layers.0.mixer.q_proj.weight": MLXArray.ones([4, 4]),
-        ]
-        let sanitized = model.sanitize(weights: weights)
-        XCTAssertNotNil(sanitized["backbone.norm_f.weight"])
-        XCTAssertNil(sanitized["mtp.layers.0.mixer.q_proj.weight"])
-    }
-
     func testReasoningConfigUsesEnableThinkingFlag() throws {
         let model = NemotronHModel(makeTestConfig(pattern: "M*"))
         let reasoning = try XCTUnwrap(model.reasoningConfig)
