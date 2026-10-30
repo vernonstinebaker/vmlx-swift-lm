@@ -122,7 +122,6 @@ public class NemotronHTests: XCTestCase {
                 "model_type": "nemotron_h",
                 "vocab_size": 131072,
                 "hidden_size": 2688,
-                "num_hidden_layers": 52,
                 "num_attention_heads": 32,
                 "num_key_value_heads": 2,
                 "mamba_num_heads": 64,
@@ -155,7 +154,9 @@ public class NemotronHTests: XCTestCase {
             NemotronHConfiguration.self, from: json.data(using: .utf8)!)
 
         XCTAssertEqual(config.hybridOverridePattern, "MEMEM*EMEM*")
-        // num_hidden_layers is overridden from the pattern length, matching mlx-lm.
+        // Nemotron 3.5 configs may omit num_hidden_layers; the stack
+        // length is the source (upstream decode). Real checkpoints keep
+        // the value and it matches the list length there.
         XCTAssertEqual(config.numHiddenLayers, config.hybridOverridePattern.count)
         XCTAssertEqual(config.numHiddenLayers, 11)
         // time_step_min/max/floor are accepted (ignored) and don't break decoding;
