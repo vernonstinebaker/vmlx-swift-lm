@@ -131,6 +131,15 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private mutating func push(
         _ boundary: ReasoningEventEmitter.Boundary, emit: (TokenStreamEvent) -> Bool
     ) -> Bool {
+        // A real implicit-end token (e.g. the protocol's tool-call token) means
+        // the model switched to its call path: a rehearsal held from a spelled
+        // opener is ordinary thinking text, not a call to classify. Doctrine
+        // split (merged 0.33.0): upstream #563 pins spelled delimiters as text;
+        // Phase 53 pins rehearsal-only streams as structured/rejected, which
+        // still happens on response start and at finish.
+        if case .implicitEnd = boundary, let held = releaseReasoningToolAttempt() {
+            guard emit(.reasoning(held)) else { return false }
+        }
         // Text still held by the detokenizer and the stop filter precedes the boundary.
         if let text = detokenizer.finish(), !process(text, emit: emit) { return false }
         detokenizer = tokenizer.makeStreamingDetokenizer()
@@ -207,11 +216,17 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
             case .reasoning(let reasoning):
                 guard handleReasoningSegment(reasoning, emit: emit) else { return false }
             case .response(let response):
-                if let attempt = finalizeReasoningToolAttempt() {
+                let outputs = toolCallProcessor.processChunkOutputs(response)
+                if outputs.contains(where: { if case .toolCall = $0 { return true }; return false }),
+                    let held = releaseReasoningToolAttempt()
+                {
+                    // A real parsed call supersedes the held rehearsal: it was
+                    // thinking text. Only classify when no call ever arrives.
+                    guard emit(.reasoning(held)) else { return false }
+                } else if let attempt = finalizeReasoningToolAttempt() {
                     guard emit(attempt) else { return false }
                 }
-                guard emitOutputs(toolCallProcessor.processChunkOutputs(response), emit: emit)
-                else { return false }
+                guard emitOutputs(outputs, emit: emit) else { return false }
             }
         }
         return true
@@ -248,6 +263,14 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
             return emit(.reasoning(head))
         }
         return true
+    }
+
+    /// Takes the held attempt without classifying it. Used when a real tool-call
+    /// signal (the implicit-end token or a parsed call) supersedes the
+    /// rehearsal: it streams as ordinary reasoning.
+    private mutating func releaseReasoningToolAttempt() -> String? {
+        defer { reasoningToolAttempt = nil }
+        return reasoningToolAttempt
     }
 
     /// Classifies the held attempt. Doctrine: reasoning-span calls surface as a
