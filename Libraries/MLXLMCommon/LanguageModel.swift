@@ -308,7 +308,22 @@ public struct LMOutput {
         func splitAlongBatch(count: Int) -> [State]? {
             guard count > 0 else { return nil }
             if count == 1 { return [self] }
-            guard let arrays = batchLeadingArrays(), !arrays.isEmpty else { return nil }
+            // Splitting consumes a *stacked* state: `stackedAlongBatch` lays
+            // every carried array out with the batch on axis 0, so the values
+            // here have leading dim `count`, not 1. Collect those directly
+            // instead of reusing `batchLeadingArrays()`, which admits only
+            // batch-of-1 rows and therefore returned nil for every stacked
+            // state (the stacked-then-split round trip never split).
+            var arrays: [String: MLXArray] = [:]
+            for (key, value) in contents {
+                guard let array = value as? MLXArray else { continue }
+                if array.ndim == 0 {
+                    arrays[key] = array.reshaped([1])
+                } else {
+                    arrays[key] = array
+                }
+            }
+            guard !arrays.isEmpty else { return nil }
             var split = Array(repeating: State(), count: count)
             for (key, value) in arrays {
                 guard value.dim(0) == count else { return nil }
