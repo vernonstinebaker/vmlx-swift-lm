@@ -251,10 +251,10 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
     /// `.allowed` tool routing, guided `.required` developer tool calls,
     /// and reasoning (chain-of-thought) routing.
     ///
-    /// Capabilities are declared explicitly by the caller at ``init(configuration:capabilities:configurationResolver:weightsLocation:load:)``
+    /// Capabilities are declared explicitly by the caller at ``init(configuration:capabilities:configurationResolver:prefillStepSize:weightsLocation:load:)``
     /// and stored verbatim. The caller includes
     /// `.guidedGeneration`/`.toolCalling`/`.reasoning` as appropriate; the
-    /// adapter does not consult ``ReasoningHeuristics`` (which remains a
+    /// adapter does not consult `ReasoningHeuristics` (which remains a
     /// standalone helper a caller may use to compute their own capability set).
     ///
     /// Declaring `.reasoning` matters for request routing: the framework only
@@ -264,10 +264,13 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
     /// capability was declared.
     public let capabilities: LanguageModelCapabilities
 
-    /// The configuration resolver that patches a per-call ``ModelConfiguration``
+    /// The configuration resolver that patches a per-call `ModelConfiguration`
     /// for this instance. Defaults to ``DefaultConfigurationResolver`` when
     /// omitted.
     public let configurationResolver: any ModelConfigurationResolver
+
+    /// Prompt prefill step size; `nil` uses the default step size.
+    public let prefillStepSize: Int?
 
     /// Configuration the framework uses to create and cache executors.
     public var executorConfiguration: Executor.Configuration {
@@ -285,8 +288,9 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
     ///   - capabilities: The capabilities this model supports
     ///     (`.guidedGeneration`, `.toolCalling`, `.reasoning`, `.vision`).
     ///     Stored verbatim; the adapter never infers or expands the set.
-    ///   - configurationResolver: Patches a per-call ``ModelConfiguration``
+    ///   - configurationResolver: Patches a per-call `ModelConfiguration`
     ///     (reasoning config, extra stop tokens) for this instance.
+    ///   - prefillStepSize: Prompt prefill step size. `nil` uses the default step size.
     ///   - weightsLocation: Resolves a model identifier to its on-disk weights
     ///     directory, for the availability checks.
     ///   - load: Loads the model container for a configuration.
@@ -303,12 +307,14 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
         capabilities: [LanguageModelCapabilities.Capability] = [.guidedGeneration],
         configurationResolver: any ModelConfigurationResolver =
             DefaultConfigurationResolver(),
+        prefillStepSize: Int? = nil,
         weightsLocation: @Sendable @escaping (String) -> URL,
         load: @escaping ContainerLoader
     ) {
         self.configuration = configuration
         self.capabilities = LanguageModelCapabilities(capabilities)
         self.configurationResolver = configurationResolver
+        self.prefillStepSize = prefillStepSize
         self.weightsLocation = weightsLocation
         self.load = load
     }
@@ -396,7 +402,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             defer { Stream.gpu.synchronize() }
             let input = try await context.processor.prepare(
                 input: UserInput(chat: [.user("warmup")]))
-            let params = GenerateParameters(maxTokens: 1)
+            let params = GenerateParameters(
+                maxTokens: 1, prefill: .init(stepSize: prefillStepSize))
             for await _ in try MLXLMCommon.generate(
                 input: input, parameters: params, context: context
             ) {
@@ -546,7 +553,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
         static func makeParameters(
             maxTokens: Int,
             requestedTemperature: Double?,
-            samplingConfiguration: MLXSamplingConfiguration?
+            samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?
         ) -> GenerateParameters {
             var parameters = GenerateParameters(maxTokens: maxTokens)
             resolveSamplingParameters(
@@ -554,6 +562,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                 clampedTemperature: clampedTemperature(requestedTemperature)
             ).apply(to: &parameters)
             parameters.seed = samplingConfiguration?.seed
+            parameters.prefill.stepSize = prefillStepSize
             return parameters
         }
 
@@ -660,12 +669,11 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             if collected.isEmpty {
                 collected = [Chat.Message.user("")]
             }
-            let messages = collected
 
             // The SDK's vision check does not cover `.attachment` segments, so the adapter
             // must enforce `.vision` for image attachments itself.
             if !model.capabilities.contains(.vision),
-                messages.contains(where: { !$0.images.isEmpty })
+                collected.contains(where: { !$0.images.isEmpty })
             {
                 throw LanguageModelError.unsupportedCapability(
                     LanguageModelError.UnsupportedCapability(
@@ -691,6 +699,14 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                 schemaJSON = nil
             }
 
+            // Guided generation adds the schema, including its @Guide descriptions,
+            // to the system prompt, so the model sees more than the grammar.
+            // `includeSchemaInPrompt` refers to the system prompt. Tool-aware
+            // prompts are unchanged.
+            let promptMessages = TranscriptConverter.promptMessages(
+                collected, schemaJSON: schemaJSON,
+                includeSchemaInPrompt: request.contextOptions.includeSchemaInPrompt)
+
             let modelID = self.modelID
             let requestedMaxTokens = request.generationOptions.maximumResponseTokens
             // Translate the SDK sampling mode once, here where generationOptions
@@ -711,6 +727,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             // reasoning config we route on.
             let declaresReasoning = model.capabilities.contains(.reasoning)
             let configurationResolver = model.configurationResolver
+            let prefillStepSize = model.prefillStepSize
             let labeledAttachments = TranscriptConverter.labeledAttachments(in: request.transcript)
 
             do {
@@ -719,16 +736,17 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                     ["modelID": modelID, "requestID": request.id.uuidString],
                     entryID: entryID, into: channel)
 
-                // Generate tokens inside actor isolation. `messages` carries
+                // Generate tokens inside actor isolation. `promptMessages` carries
                 // non-Sendable `Chat.Message` instances (UserInput.Image and
-                // .Video are not Sendable), so route the array through
+                // .Video are not Sendable), so route it through
                 // perform(nonSendable:_:) which boxes it across the actor hop.
-                try await container.perform(nonSendable: messages) { context, messages in
+                try await container.perform(nonSendable: promptMessages) {
+                    context, promptMessages in
                     try AttachmentLabelValidator.default.validate(
                         labeledAttachments, with: context.tokenizer)
 
-                    // Render the prompt through the model's UserInputProcessor.
-                    let userInput = UserInput(chat: messages)
+                    // Render the guided-generation prompt through the model's UserInputProcessor.
+                    let userInput = UserInput(chat: promptMessages.withSchema)
                     let input = try await context.processor.prepare(input: userInput)
 
                     // Resolve the per-instance configuration. Held strictly as
@@ -806,7 +824,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                         let suppressionConfig = resolved.reasoningConfig
                     {
                         suppressedInput = try await Self.preparedInput(
-                            messages: messages, config: suppressionConfig,
+                            messages: promptMessages.withoutSchema, config: suppressionConfig,
                             thinkingEnabled: false, processor: context.processor,
                             cannotDisableMessage:
                                 "This model always reasons; .reasoning must be declared at MLXLanguageModel init to receive its output."
@@ -823,7 +841,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                         let thinkingEnabled = Self.thinkingEnabled(
                             for: request.contextOptions.reasoningLevel)
                         let reasoningInput = try await Self.preparedInput(
-                            messages: messages, config: reasoningConfig,
+                            messages: promptMessages.withoutSchema, config: reasoningConfig,
                             thinkingEnabled: thinkingEnabled, processor: context.processor,
                             cannotDisableMessage:
                                 "This model always reasons; reasoning cannot be disabled via reasoningLevel."
@@ -931,7 +949,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                                 from: enabledToolDefinitions)
                             let toolAwareInput = try await context.processor.prepare(
                                 input: UserInput(
-                                    chat: messages,
+                                    chat: promptMessages.withoutSchema,
                                     tools: toolSpecs,
                                     additionalContext: toolAwareContext))
                             let reasoning = routedReasoningConfig.map {
@@ -950,6 +968,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                                 requestedMaxTokens: requestedMaxTokens,
                                 requestedTemperature: request.generationOptions.temperature,
                                 samplingConfiguration: requestedSamplingConfiguration,
+                                prefillStepSize: prefillStepSize,
                                 reasoningEntryID: reasoningEntryID,
                                 context: context,
                                 channel: channel)
@@ -976,6 +995,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                                     input: input,
                                     modelID: modelID,
                                     requestedMaxTokens: requestedMaxTokens,
+                                    prefillStepSize: prefillStepSize,
                                     entryID: entryID,
                                     context: context,
                                     channel: channel)
@@ -1003,7 +1023,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                             from: requiredToolDefinitions)
                         let toolAwareInput = try await context.processor.prepare(
                             input: UserInput(
-                                chat: messages,
+                                chat: promptMessages.withoutSchema,
                                 tools: toolSpecs,
                                 additionalContext: toolAwareContext))
 
@@ -1072,6 +1092,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                                 requestedTemperature: request.generationOptions
                                     .temperature,
                                 samplingConfiguration: requestedSamplingConfiguration,
+                                prefillStepSize: prefillStepSize,
                                 reasoningEntryID: reasoningEntryID,
                                 responseEntryID: entryID,
                                 context: context, channel: channel)
@@ -1119,7 +1140,9 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                                 hardReserve: hardReserve,
                                 closingBias: closingBias,
                                 whitespaceBias: whitespaceBias,
-                                whitespaceTokenIDs: whitespaceTokenIDs
+                                whitespaceTokenIDs: whitespaceTokenIDs,
+                                prefill: .init(
+                                    stepSize: prefillStepSize ?? PrefillParameters.defaultStepSize)
                             ) { text in
                                 outputBuffer += text
                                 GuidedGenerationDiagnosticSink.current?.recordEmit()
@@ -1165,6 +1188,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                             input: input,
                             modelID: modelID,
                             requestedMaxTokens: requestedMaxTokens,
+                            prefillStepSize: prefillStepSize,
                             entryID: entryID,
                             context: context,
                             channel: channel)
@@ -1175,6 +1199,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                             requestedMaxTokens: requestedMaxTokens,
                             requestedTemperature: request.generationOptions.temperature,
                             samplingConfiguration: requestedSamplingConfiguration,
+                            prefillStepSize: prefillStepSize,
                             responseEntryID: entryID,
                             reasoningEntryID: reasoningEntryID,
                             context: context,
@@ -1218,6 +1243,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             requestedMaxTokens: Int?,
             requestedTemperature: Double?,
             samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?,
             reasoningEntryID: String,
             context: ModelContext,
             channel: LanguageModelExecutorGenerationChannel
@@ -1225,7 +1251,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             let params = Self.makeParameters(
                 maxTokens: requestedMaxTokens ?? Self.defaultMaxTokens,
                 requestedTemperature: requestedTemperature,
-                samplingConfiguration: samplingConfiguration)
+                samplingConfiguration: samplingConfiguration,
+                prefillStepSize: prefillStepSize)
             let format = context.configuration.toolCallFormat ?? .json
             var router = AllowedToolOutputRouter(
                 format: format,
@@ -1406,6 +1433,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             input: LMInput,
             modelID: String,
             requestedMaxTokens: Int?,
+            prefillStepSize: Int?,
             entryID: String,
             context: ModelContext,
             channel: LanguageModelExecutorGenerationChannel
@@ -1454,7 +1482,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                     hardReserve: hardReserve,
                     closingBias: bias.closing,
                     whitespaceBias: bias.whitespace,
-                    whitespaceTokenIDs: bias.whitespaceTokenIDs
+                    whitespaceTokenIDs: bias.whitespaceTokenIDs,
+                    prefill: .init(stepSize: prefillStepSize ?? PrefillParameters.defaultStepSize)
                 ) { text in
                     textContinuation.yield(text)
                     GuidedGenerationDiagnosticSink.current?.recordEmit()
@@ -1501,6 +1530,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             requestedMaxTokens: Int?,
             requestedTemperature: Double?,
             samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?,
             entryID: String,
             context: ModelContext,
             channel: LanguageModelExecutorGenerationChannel
@@ -1510,7 +1540,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             let params = Self.makeParameters(
                 maxTokens: requestedMaxTokens ?? Self.defaultMaxTokens,
                 requestedTemperature: requestedTemperature,
-                samplingConfiguration: samplingConfiguration
+                samplingConfiguration: samplingConfiguration,
+                prefillStepSize: prefillStepSize
             )
 
             for await generation in try generate(
@@ -1561,6 +1592,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             requestedMaxTokens: Int?,
             requestedTemperature: Double?,
             samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?,
             responseEntryID: String,
             reasoningEntryID: String,
             context: ModelContext,
@@ -1574,6 +1606,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                     requestedMaxTokens: requestedMaxTokens,
                     requestedTemperature: requestedTemperature,
                     samplingConfiguration: samplingConfiguration,
+                    prefillStepSize: prefillStepSize,
                     responseEntryID: responseEntryID,
                     reasoningEntryID: reasoningEntryID,
                     context: context,
@@ -1584,6 +1617,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
                     requestedMaxTokens: requestedMaxTokens,
                     requestedTemperature: requestedTemperature,
                     samplingConfiguration: samplingConfiguration,
+                    prefillStepSize: prefillStepSize,
                     entryID: responseEntryID,
                     context: context,
                     channel: channel)
@@ -1604,6 +1638,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             requestedMaxTokens: Int?,
             requestedTemperature: Double?,
             samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?,
             responseEntryID: String,
             reasoningEntryID: String,
             context: ModelContext,
@@ -1612,7 +1647,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             let params = Self.makeParameters(
                 maxTokens: requestedMaxTokens ?? Self.defaultMaxTokens,
                 requestedTemperature: requestedTemperature,
-                samplingConfiguration: samplingConfiguration
+                samplingConfiguration: samplingConfiguration,
+                prefillStepSize: prefillStepSize
             )
 
             // The collector matches the delimiters by token id when the tokenizer
@@ -1876,6 +1912,7 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             maxTokens: Int,
             requestedTemperature: Double?,
             samplingConfiguration: MLXSamplingConfiguration?,
+            prefillStepSize: Int?,
             reasoningEntryID: String,
             responseEntryID: String,
             context: ModelContext,
@@ -1884,7 +1921,8 @@ public struct MLXLanguageModel: FoundationModels.LanguageModel, Sendable {
             let params = Self.makeParameters(
                 maxTokens: maxTokens,
                 requestedTemperature: requestedTemperature,
-                samplingConfiguration: samplingConfiguration
+                samplingConfiguration: samplingConfiguration,
+                prefillStepSize: prefillStepSize
             )
             var collector = ReasoningTokenCollector(
                 config: config, primedInside: primedInside, tokenizer: context.tokenizer
