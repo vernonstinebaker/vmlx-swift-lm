@@ -69,6 +69,10 @@ public final class ModelContainer: ModelMemoryReporting {
         cacheCoordinatorStorage.clear()
     }
 
+    /// Checkpoint-recommended sampling settings, with generic defaults used
+    /// only when the checkpoint does not provide a value.
+    public let defaultGenerateParameters: GenerateParameters
+
     public var configuration: ModelConfiguration {
         get async {
             await context.read { $0.configuration }
@@ -88,6 +92,8 @@ public final class ModelContainer: ModelMemoryReporting {
     }
 
     public init(context: consuming ModelContext) {
+        self.defaultGenerateParameters =
+            context.configuration.generationConfig?.applyingSamplingDefaults() ?? .init()
         self.context = .init(context)
     }
 
@@ -225,6 +231,7 @@ public final class ModelContainer: ModelMemoryReporting {
     ///     case .info(let info): print(info.tokensPerSecond)
     ///     case .toolCall(let call): handleToolCall(call)
     ///     case .rejectedToolCall(let rejection): handleRejectedToolCall(rejection)
+    ///     case .steering: break
     ///     }
     /// }
     /// ```
