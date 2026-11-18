@@ -33,9 +33,9 @@ public struct Qwen35ToolCallParser: ToolCallParser, Sendable {
             return nil
         }
 
-        guard let call, isDeclaredTool(call.function.name, tools: tools) else {
-            return nil
-        }
+        // Syntax parsing is separate from authorization: the processor applies
+        // `ToolCallPolicy.authorization`, so an undeclared call can surface to
+        // the client instead of vanishing before the rejection channel.
         return call
     }
 

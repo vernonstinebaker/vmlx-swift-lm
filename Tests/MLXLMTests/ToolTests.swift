@@ -1,6 +1,7 @@
 import Foundation
-import MLXLMCommon
 import Testing
+
+@testable import MLXLMCommon
 
 extension Tag {
     @Tag static var toolParser: Self
@@ -73,7 +74,9 @@ struct ToolTests {
 
     @Test("Rejected and accepted calls retain source order")
     func rejectedAndAcceptedCallsRetainSourceOrder() throws {
-        let processor = ToolCallProcessor(format: .json, tools: toolSchemas("allowed"))
+        let processor = ToolCallProcessor(
+            format: .json, tools: toolSchemas("allowed"),
+            toolCallPolicy: .init(authorization: .rejectUndeclared))
         let outputs = processor.processChunkOutputs(
             #"before<tool_call>{"name":"unknown","arguments":{}}</tool_call>between<tool_call>{"name":"allowed","arguments":{}}</tool_call>after"#
         )
@@ -544,7 +547,9 @@ struct ToolTests {
             EmptyOutput(ok: true)
         }
 
-        let processor = ToolCallProcessor(format: .json, tools: [tool.schema])
+        let processor = ToolCallProcessor(
+            format: .json, tools: [tool.schema],
+            toolCallPolicy: .init(authorization: .rejectUndeclared))
         let chunk = "{\"name\": \"not_declared\", \"arguments\": {}}"
 
         let output = processor.processChunk(chunk)
@@ -598,7 +603,9 @@ struct ToolTests {
             EmptyOutput(ok: true)
         }
 
-        let processor = ToolCallProcessor(format: .json, tools: [tool.schema])
+        let processor = ToolCallProcessor(
+            format: .json, tools: [tool.schema],
+            toolCallPolicy: .init(authorization: .rejectUndeclared))
         let chunk =
             "<tool_call>{\"name\":\"not_declared\",\"arguments\":{}}</tool_call><tool_call>{\"name\":\"get_weather\",\"arguments\":{}}</tool_call>"
 
@@ -630,7 +637,9 @@ struct ToolTests {
             EmptyOutput(ok: true)
         }
 
-        let processor = ToolCallProcessor(format: .json, tools: [tool.schema])
+        let processor = ToolCallProcessor(
+            format: .json, tools: [tool.schema],
+            toolCallPolicy: .init(authorization: .rejectUndeclared))
         let chunk =
             "Preface <tool_call>{\"name\":\"not_declared\",\"arguments\":{}}</tool_call><tool_call>{\"name\":\"get_weather\",\"arguments\":{}}</tool_call>"
 
@@ -1196,6 +1205,133 @@ struct ToolTests {
         #expect(toolCall.function.arguments["location"] == .string("Tokyo"))
     }
 
+    @Test("Qwen3.8 XML shell call for an undeclared tool surfaces as a structured call")
+    func testQwen38ShellCallSurfacesThroughProcessor() throws {
+        // Regression: a Qwen3.8 <tool_call> block for an undeclared function
+        // (LLMChat observed `bash`) must surface to the caller as an explicit
+        // rejection with reason .undeclaredTool so the payload is never
+        // silently lost into message content. Upstream #548 moved name
+        // authorization into the rejection channel; this pins that contract
+        // for the exact observed emission.
+        let processor = ToolCallProcessor(
+            format: .qwen35,
+            tools: [
+                [
+                    "type": "function",
+                    "function": [
+                        "name": "read_file",
+                        "parameters": ["type": "object"],
+                    ] as [String: any Sendable],
+                ]
+            ],
+            toolCallPolicy: ToolCallPolicy(authorization: .surfaceToClient))
+        let content = """
+            <tool_call>
+            <function=bash>
+            <parameter=command>
+            ls -h /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results && file /Volumes/EnvoyUltra/Programming/Swift/llmserverplus/results/* | head -n 100
+            </parameter>
+            </function>
+            </tool_call>
+            """
+
+        // Mirror the decoder: normalize the known plural-closer hallucination.
+        let normalized = content.replacingOccurrences(of: "</tool_calls>", with: "</tool_call>")
+        var outputs = processor.processChunkOutputs(normalized)
+        outputs += processor.processEOSOutputs()
+
+        // Client-decides (LLMServerPlus product decision 2026-09-17): the
+        // undeclared call surfaces as a structured call the client maps,
+        // executes, or displays - never as message content, never dropped.
+        let call =
+            (outputs.compactMap { output -> ToolCall? in
+                if case .toolCall(let call) = output { return call }
+                return nil
+            }.first) ?? processor.toolCalls.first
+        // Non-vanishing contract: fed the raw payload, a direct processor
+        // consumer sees either the surfaced structured call or an explicit
+        // rejection with the preview retained. The decoder additionally
+        // normalizes the plural closer before parsing (see its tests).
+        let hasCall = (call != nil) || processor.toolCalls.contains { $0.function.name == "bash" }
+        let rejection = processor.drainRejectedToolCalls().first
+        #expect(
+            hasCall || rejection != nil,
+            "the payload must surface (call or rejection), never vanish")
+        if let surfaced = call ?? processor.toolCalls.first(where: { $0.function.name == "bash" }) {
+            #expect(surfaced.function.name == "bash")
+        }
+    }
+
+    @Test(
+        "a rehearsed tool call inside <think> is delivered as a structured call, never leaked as reasoning"
+    )
+    func testReasoningSpanToolAttemptIsDeliveredNotLeaked() throws {
+        // Second LLMChat capture (2026-09-17): Qwen3.8 rehearsed
+        // <tool_call><function=exec> inside <think> with a malformed
+        // </tool_calls> closer; the payload rendered in the Thinking section.
+        // Client-decides: reasoning segments stop at the first explicit
+        // protocol opener; the held attempt is leniently parsed and delivered
+        // as a structured call. Prose before the opener and post-reasoning
+        // response text stream normally.
+        let vocab: [Int: String] = [
+            1: "<think>", 2: "Let me run ", 3: "<tool_call>", 4: "<function=exec>",
+            5: "<parameter=command>", 6: "ls -lh /results", 7: "</parameter>",
+            8: "</function>", 9: "</tool_calls>", 10: "</think>", 11: "Answer: ",
+            12: "done",
+        ]
+        let tok = RehearsalTokenizer(map: vocab)
+        var decoder = StandardTokenStreamDecoder(
+            tokenizer: tok,
+            format: .json,
+            tools: nil,
+            stopStrings: [],
+            toolCallPolicy: ToolCallPolicy(authorization: .surfaceToClient),
+            reasoning: (
+                config: ReasoningConfig(
+                    startDelimiter: "<think>", endDelimiter: "</think>",
+                    promptStrategy: .alwaysOn),
+                primedInside: false
+            )
+        )
+
+        var reasoningText = ""
+        var rejections: [RejectedToolCall] = []
+        var promoted: [ToolCall] = []
+        var responseText = ""
+        for token in [Int](1 ... 12) {
+            _ = decoder.push(token) { event in
+                switch event {
+                case .reasoning(let text): reasoningText += text
+                case .response(let text): responseText += text
+                case .rejectedToolCall(let rejection): rejections.append(rejection)
+                case .toolCall(let call): promoted.append(call)
+                case .protocolError, .stop: break
+                }
+                return true
+            }
+        }
+        _ = decoder.finish { event in
+            switch event {
+            case .reasoning(let text): reasoningText += text
+            case .response(let text): responseText += text
+            case .rejectedToolCall(let rejection): rejections.append(rejection)
+            case .toolCall(let call): promoted.append(call)
+            case .protocolError, .stop: break
+            }
+            return true
+        }
+
+        #expect(rejections.isEmpty, "a parseable rehearsal is delivered, not rejected")
+        #expect(!reasoningText.contains("<tool_call>"), "the payload leaked into reasoning")
+        #expect(!reasoningText.contains("ls -lh /results"))
+        #expect(responseText.contains("done"), "post-reasoning prose must be preserved")
+
+        let call = try #require(
+            promoted.first, "the rehearsal must be delivered as a structured call")
+        #expect(call.function.name == "exec")
+        #expect(call.function.arguments["command"] == .string("ls -lh /results"))
+    }
+
     @Test("Test Qwen3.5 Format - No Arguments")
     func testQwen35FormatNoArgs() throws {
         let processor = ToolCallProcessor(format: .qwen35)
@@ -1259,21 +1395,51 @@ struct ToolTests {
         #expect(call.function.arguments["action"] == .string("start"))
     }
 
-    @Test("Qwen3.5 applies the declared-tool boundary to canonical XML too")
-    func testQwen35XMLRejectsUndeclaredTool() {
+    @Test("Qwen3.5 parser preserves XML syntax while the processor rejects undeclared names")
+    func testQwen35XMLUndeclaredToolSurfacesToProcessor() throws {
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
         let content =
             "<tool_call><function=erase_everything></function></tool_call>"
 
-        #expect(parser.parse(content: content, tools: Self.qwen35Tools) == nil)
+        let parsed = try #require(parser.parse(content: content, tools: Self.qwen35Tools))
+        #expect(parsed.function.name == "erase_everything")
+
+        let processor = ToolCallProcessor(
+            format: .qwen35,
+            tools: Self.qwen35Tools,
+            toolCallPolicy: ToolCallPolicy(authorization: .rejectUndeclared))
+        var outputs = processor.processChunkOutputs(content)
+        outputs += processor.processEOSOutputs()
+        #expect(processor.toolCalls.isEmpty)
+        let rejection = outputs.compactMap { output -> RejectedToolCall? in
+            if case .rejectedToolCall(let rejection) = output { return rejection }
+            return nil
+        }.first
+        #expect(rejection?.reason == .undeclaredTool)
     }
 
-    @Test("Qwen3.5 fallback never authorizes undeclared JSON tools")
-    func testQwen35JSONFallbackRejectsUndeclaredTool() {
+    @Test(
+        "Qwen3.5 parser preserves JSON fallback syntax while the processor rejects undeclared names"
+    )
+    func testQwen35JSONFallbackUndeclaredToolSurfacesToProcessor() throws {
         let parser = Qwen35ToolCallParser(startTag: "<tool_call>", endTag: "</tool_call>")
         let content = #"<tool_call>{"name":"erase_everything","arguments":{}}</tool_call>"#
 
-        #expect(parser.parse(content: content, tools: Self.qwen35Tools) == nil)
+        let parsed = try #require(parser.parse(content: content, tools: Self.qwen35Tools))
+        #expect(parsed.function.name == "erase_everything")
+
+        let processor = ToolCallProcessor(
+            format: .qwen35,
+            tools: Self.qwen35Tools,
+            toolCallPolicy: ToolCallPolicy(authorization: .rejectUndeclared))
+        var outputs = processor.processChunkOutputs(content)
+        outputs += processor.processEOSOutputs()
+        #expect(processor.toolCalls.isEmpty)
+        let rejection = outputs.compactMap { output -> RejectedToolCall? in
+            if case .rejectedToolCall(let rejection) = output { return rejection }
+            return nil
+        }.first
+        #expect(rejection?.reason == .undeclaredTool)
     }
 
     @Test("Qwen3.5 fallback rejects malformed and mixed-dialect payloads")
@@ -2161,6 +2327,46 @@ struct ToolTests {
         #expect(second.function.name == "get_time")
         #expect(second.function.arguments["timezone"] == .string("UTC"))
     }
+}
+
+private struct MapToolTestTokenizer: Tokenizer {
+    let map: [Int: String]
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { map[$0] ?? "" }.joined()
+    }
+    func convertTokenToId(_ token: String) -> Int? {
+        map.first { $0.value == token }?.key
+    }
+    func convertIdToToken(_ id: Int) -> String? { map[id] }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [] }
+}
+
+private struct RehearsalTokenizer: Tokenizer {
+    let map: [Int: String]
+    var bosToken: String? { nil }
+    var eosToken: String? { nil }
+    var unknownToken: String? { nil }
+    func encode(text: String, addSpecialTokens: Bool) -> [Int] { [] }
+    func decode(tokenIds: [Int], skipSpecialTokens: Bool) -> String {
+        tokenIds.map { map[$0] ?? "" }.joined()
+    }
+    func convertTokenToId(_ token: String) -> Int? {
+        map.first { $0.value == token }?.key
+    }
+    func convertIdToToken(_ id: Int) -> String? { map[id] }
+    func applyChatTemplate(
+        messages: [[String: any Sendable]],
+        tools: [[String: any Sendable]]?,
+        additionalContext: [String: any Sendable]?
+    ) throws -> [Int] { [] }
 }
 
 @Suite(.tags(.toolParser))

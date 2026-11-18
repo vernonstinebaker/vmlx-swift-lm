@@ -68,6 +68,9 @@ extension TokenStreamDecoder {
 struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private let tokenizer: any Tokenizer
     private var detokenizer: any StreamingDetokenizer
+    private let format: ToolCallFormat
+    private let tools: [[String: any Sendable]]?
+    private let toolCallPolicy: ToolCallPolicy
     private let toolCallProcessor: ToolCallProcessor
     private var stopStringFilter: StopStringFilter
 
@@ -85,6 +88,12 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
     /// implicit end delimiter that is a single token.
     private let reasoningTokens: ReasoningDelimiterTokens?
 
+    /// Buffered reasoning text from the first explicit tool-protocol opener,
+    /// so a rehearsed call inside `{"arg": "<thinking>"}` is rejected or surfaced
+    /// structurally instead of leaking as prose. Fork divergence (Phase 53):
+    /// upstream routes reasoning straight to the stream.
+    private var reasoningToolAttempt: String?
+
     init(
         tokenizer: any Tokenizer,
         format: ToolCallFormat,
@@ -94,6 +103,9 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         reasoning: (config: ReasoningConfig, primedInside: Bool)? = nil
     ) {
         self.tokenizer = tokenizer
+        self.format = format
+        self.tools = tools
+        self.toolCallPolicy = toolCallPolicy
         self.detokenizer = tokenizer.makeStreamingDetokenizer()
         self.toolCallProcessor = ToolCallProcessor(
             format: format, tools: tools, toolCallPolicy: toolCallPolicy)
@@ -139,6 +151,15 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
     private mutating func push(
         _ boundary: ReasoningEventEmitter.Boundary, emit: (TokenStreamEvent) -> Bool
     ) -> Bool {
+        // A real implicit-end token (e.g. the protocol's tool-call token) means
+        // the model switched to its call path: a rehearsal held from a spelled
+        // opener is ordinary thinking text, not a call to classify. Doctrine
+        // split (merged 0.33.0): upstream #563 pins spelled delimiters as text;
+        // Phase 53 pins rehearsal-only streams as structured/rejected, which
+        // still happens on response start and at finish.
+        if case .implicitEnd = boundary, let held = releaseReasoningToolAttempt() {
+            guard emit(.reasoning(held)) else { return false }
+        }
         // Text still held by the detokenizer and the stop filter precedes the boundary.
         if let text = detokenizer.finish(), !process(text, emit: emit) { return false }
         detokenizer = tokenizer.makeStreamingDetokenizer()
@@ -184,6 +205,13 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
             return false
         }
 
+        // Classify a tool attempt still held from the reasoning span before EOS:
+        // it must surface as a structured call or an explicit rejection, never
+        // silently disappear with the stream.
+        if let attempt = finalizeReasoningToolAttempt() {
+            guard emit(attempt) else { return false }
+        }
+
         return emitOutputs(toolCallProcessor.processEOSOutputs(), emit: emit)
     }
 
@@ -206,13 +234,120 @@ struct StandardTokenStreamDecoder: TokenStreamDecoder {
         for segment in segments {
             switch segment {
             case .reasoning(let reasoning):
-                guard emit(.reasoning(reasoning)) else { return false }
+                guard handleReasoningSegment(reasoning, emit: emit) else { return false }
             case .response(let response):
-                guard emitOutputs(toolCallProcessor.processChunkOutputs(response), emit: emit)
-                else { return false }
+                let outputs = toolCallProcessor.processChunkOutputs(response)
+                if outputs.contains(where: { if case .toolCall = $0 { return true }; return false }),
+                    let held = releaseReasoningToolAttempt()
+                {
+                    // A real parsed call supersedes the held rehearsal: it was
+                    // thinking text. Only classify when no call ever arrives.
+                    guard emit(.reasoning(held)) else { return false }
+                } else if let attempt = finalizeReasoningToolAttempt() {
+                    guard emit(attempt) else { return false }
+                }
+                guard emitOutputs(outputs, emit: emit) else { return false }
             }
         }
         return true
+    }
+
+    private static let explicitToolOpeners = [
+        "<tool_call>", "<|tool_call>", "<function=", "[TOOL_CALLS]",
+    ]
+
+    /// Routes a reasoning segment: prose before an explicit tool-protocol
+    /// opener streams as reasoning; from the opener onward the text is held
+    /// and ultimately classified, so a rehearsed call never leaks as text.
+    private mutating func handleReasoningSegment(
+        _ text: String, emit: (TokenStreamEvent) -> Bool
+    ) -> Bool {
+        if reasoningToolAttempt != nil {
+            reasoningToolAttempt?.append(text)
+            return true
+        }
+        var best: (Range<String.Index>, String)?
+        for opener in Self.explicitToolOpeners {
+            if let range = text.range(of: opener),
+                best == nil || range.lowerBound < best!.0.lowerBound
+            {
+                best = (range, opener)
+            }
+        }
+        guard let best else {
+            return emit(.reasoning(text))
+        }
+        let head = String(text[..<best.0.lowerBound])
+        reasoningToolAttempt = String(text[best.0.lowerBound...])
+        if !head.isEmpty {
+            return emit(.reasoning(head))
+        }
+        return true
+    }
+
+    /// Takes the held attempt without classifying it. Used when a real tool-call
+    /// signal (the implicit-end token or a parsed call) supersedes the
+    /// rehearsal: it streams as ordinary reasoning.
+    private mutating func releaseReasoningToolAttempt() -> String? {
+        defer { reasoningToolAttempt = nil }
+        return reasoningToolAttempt
+    }
+
+    /// Classifies the held attempt. Doctrine: reasoning-span calls surface as a
+    /// structured call when parseable (client-decides) and otherwise as an
+    /// explicit rejection — never silently dropped, never leaked as prose.
+    private mutating func finalizeReasoningToolAttempt() -> TokenStreamEvent? {
+        guard let attempt = reasoningToolAttempt else { return nil }
+        reasoningToolAttempt = nil
+        // Client-decides: a parseable attempt is delivered as a structured
+        // call through a dialect-matched processor, malformed closers and all.
+        let dialect: ToolCallFormat
+        if attempt.contains("<function=") {
+            dialect = .qwen35
+        } else if attempt.contains("[TOOL_CALLS]") {
+            dialect = .mistral
+        } else if attempt.contains("<|tool_call>") {
+            dialect = .gptOSS
+        } else {
+            dialect = .json
+        }
+        // Qwen-family checkpoints intermittently emit the plural closer
+        // `</tool_calls>` for a `<tool_call>` frame; normalize the known
+        // hallucinations so the lenient parse can complete.
+        var normalizedAttempt = attempt
+            .replacingOccurrences(of: "</tool_calls>", with: "</tool_call>")
+        normalizedAttempt += dialect.closingStopStrings.joined()
+        var promotionProcessor = ToolCallProcessor(
+            format: dialect, tools: tools, toolCallPolicy: toolCallPolicy)
+        var outputs = promotionProcessor.processChunkOutputs(normalizedAttempt)
+        if !outputs.contains(where: { if case .toolCall = $0 { return true }; return false }) {
+            for frame in dialect.closingStopStrings {
+                outputs += promotionProcessor.processChunkOutputs(frame)
+            }
+            outputs += promotionProcessor.processEOSOutputs()
+        }
+        if let call = outputs.compactMap({ output -> ToolCall? in
+            if case let .toolCall(call) = output { return call }
+            return nil
+        }).first {
+            return .toolCall(call)
+        }
+
+        // Unparseable: explicit rejection with bounded preview.
+        let stripped = Self.explicitToolOpeners.reduce(attempt) { partial, opener in
+            partial.replacingOccurrences(of: opener, with: "")
+        }
+        let nameCandidate =
+            stripped
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }
+        return .rejectedToolCall(
+            RejectedToolCall(
+                reason: nameCandidate.isEmpty ? .missingToolName : .undeclaredTool,
+                format: format,
+                toolName: nameCandidate.isEmpty ? nil : String(nameCandidate),
+                rawText: attempt
+            ))
     }
 
     /// Maps ordered processor outputs onto stream events, keeping response text,
