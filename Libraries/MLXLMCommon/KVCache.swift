@@ -62,6 +62,14 @@ public protocol KVCache: Evaluatable {
     /// get the current state for serialization
     var state: [MLXArray] { get set }
 
+    /// Read the live attention keys and values without updating the cache.
+    ///
+    /// Unlike ``KVCache/state``, which is an implementation-defined serialization
+    /// representation, this returns dense K/V in chronological order, trimmed
+    /// to the entries currently visible to attention. Caches that do not store
+    /// attention K/V return `nil`.
+    func currentKeyValues() -> (keys: MLXArray, values: MLXArray)?
+
     /// get/set metadata state as string array for serialization
     var metaState: [String] { get set }
 
@@ -144,6 +152,8 @@ extension KVCache {
     public func prepare(lengths: MLXArray?) {}
 
     public func finalize() {}
+
+    public func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? { nil }
 }
 
 public func withPreparedCache<Result>(
@@ -268,6 +278,8 @@ open class BaseKVCache: KVCache {
             }
         }
     }
+
+    open func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? { nil }
 
     open var metaState: [String] {
         get { [""] }
@@ -536,6 +548,15 @@ public class KVCacheSimple: BaseKVCache, CustomDebugStringConvertible {
             self.values = newValue[1]
             self.offset = self.keys!.dim(2)
         }
+    }
+
+    public override func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? {
+        guard let keys, let values else { return nil }
+        let count = Swift.min(offset, keys.dim(2))
+        return (
+            keys[.ellipsis, ..<count, 0...],
+            values[.ellipsis, ..<count, 0...]
+        )
     }
 
     public override var isTrimmable: Bool { true }
@@ -813,6 +834,10 @@ public class RotatingKVCache: BaseKVCache, CustomDebugStringConvertible {
         return (view(keys), view(values))
     }
 
+    public override func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? {
+        logicalView(tail: .max)
+    }
+
     private func updateConcat(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
         if self.keys == nil {
             self.keys = keys
@@ -937,6 +962,11 @@ public class RotatingKVCache: BaseKVCache, CustomDebugStringConvertible {
             // Note: RotatingKVCache doesn't set offset from keys like KVCache does
             // The offset is managed through meta_state
         }
+    }
+
+    var temporalState: [MLXArray] {
+        guard let keys = self.keys, let values = self.values else { return [] }
+        return [temporalOrder(keys), temporalOrder(values)]
     }
 
     public override var metaState: [String] {
@@ -1264,6 +1294,18 @@ public class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
         return (trimmedKeys, trimmedValues)
     }
 
+    public override func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? {
+        guard let (keys, values) = getQuantizedState() else { return nil }
+        return (
+            dequantized(
+                keys.0, scales: keys.1, biases: keys.2,
+                groupSize: groupSize, bits: bits, mode: mode),
+            dequantized(
+                values.0, scales: values.1, biases: values.2,
+                groupSize: groupSize, bits: bits, mode: mode)
+        )
+    }
+
     /// Update cache and return quantized tuples (Python's update_and_fetch)
     /// This is needed because `update` in Swift must return `(MLXArray, MLXArray)`
     ///
@@ -1552,6 +1594,15 @@ public class ChunkedKVCache: KVCacheSimple {
         self.values![.ellipsis, prev ..< end, 0...] = values
 
         return (self.keys![.ellipsis, ..<end, 0...], self.values![.ellipsis, ..<end, 0...])
+    }
+
+    public override func currentKeyValues() -> (keys: MLXArray, values: MLXArray)? {
+        guard let keys, let values else { return nil }
+        let count = Swift.min(offset - startPosition, keys.dim(2))
+        return (
+            keys[.ellipsis, ..<count, 0...],
+            values[.ellipsis, ..<count, 0...]
+        )
     }
 
     @discardableResult
@@ -2312,9 +2363,9 @@ struct KVCacheError: Error, LocalizedError {
 /// A snapshot does not carry the chat transcript. A `ChatSession` restored from one appends each
 /// new message rather than re-rendering the conversation, so a later image-bearing turn builds a
 /// different prompt than it would in a session that still holds its history. Positions stay
-/// correct either way. On vision encoders that attend across image boundaries (Qwen2-VL today)
-/// the new image's features differ too, since it is encoded alone rather than beside the cached
-/// one; Qwen2.5-VL, Qwen3-VL, and GLM-OCR isolate each image and are unaffected.
+/// correct either way. On vision encoders that attend across image boundaries the new image's
+/// features differ too, since it is encoded alone rather than beside the cached one; Qwen2-VL,
+/// Qwen2.5-VL, Qwen3-VL, and GLM-OCR isolate each image and are unaffected.
 ///
 /// The cache instances are mutable reference types. Transfer a snapshot to one session or copy the
 /// caches before constructing multiple sessions from it.
